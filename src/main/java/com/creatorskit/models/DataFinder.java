@@ -1,5 +1,6 @@
 package com.creatorskit.models;
 
+import com.creatorskit.CreatorsConfig;
 import com.creatorskit.models.datatypes.*;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
@@ -56,6 +57,7 @@ public class DataFinder
 
     private Gson gson;
     OkHttpClient httpClient;
+    CreatorsConfig config;
 
     private String lastFound;
     private int lastAnim;
@@ -86,11 +88,13 @@ public class DataFinder
     private static final int WEAPON_IDX = 3;
     private static final int SHIELD_IDX = 5;
 
+
     @Inject
-    public DataFinder(Gson gson, OkHttpClient httpClient)
+    public DataFinder(Gson gson, OkHttpClient httpClient, CreatorsConfig config)
     {
         this.gson = gson;
         this.httpClient = httpClient;
+        this.config = config;
 
         lookupNPCData();
         lookupObjectData();
@@ -170,7 +174,7 @@ public class DataFinder
     private void lookupSeqData()
     {
         Request seqRequest = new Request.Builder()
-                .url("https://raw.githubusercontent.com/ScreteMonge/cache-converter/master/.venv/sequences.json")
+                .url(config.configBaseUrl() + "sequences.json")
                 .build();
         Call call = httpClient.newCall(seqRequest);
         call.enqueue(new Callback()
@@ -178,7 +182,7 @@ public class DataFinder
             @Override
             public void onFailure(Call call, IOException e)
             {
-                log.debug("Failed to access URL: https://raw.githubusercontent.com/ScreteMonge/cache-converter/master/.venv/sequences.json");
+                log.debug("Failed to access URL: {}sequences.json", config.configBaseUrl());
                 executeCallbacks(DataType.SEQ);
             }
 
@@ -202,7 +206,7 @@ public class DataFinder
     private void lookupAnimData()
     {
         Request animRequest = new Request.Builder()
-                .url("https://raw.githubusercontent.com/ScreteMonge/cache-converter/master/.venv/anims.json")
+                .url(config.configBaseUrl() + "anims.json")
                 .build();
         Call call = httpClient.newCall(animRequest);
         call.enqueue(new Callback()
@@ -210,7 +214,7 @@ public class DataFinder
             @Override
             public void onFailure(Call call, IOException e)
             {
-                log.debug("Failed to access URL: https://raw.githubusercontent.com/ScreteMonge/cache-converter/master/.venv/anims.json");
+                log.debug("Failed to access URL: {}anims.json", config.configBaseUrl());
                 executeCallbacks(DataType.ANIM);
             }
 
@@ -693,7 +697,7 @@ public class DataFinder
     private void lookupSpotAnimData()
     {
         Request spotanimRequest = new Request.Builder()
-                .url("https://raw.githubusercontent.com/ScreteMonge/cache-converter/master/.venv/spotanims.json")
+                .url(config.configBaseUrl() + "spotanims.json")
                 .build();
         Call call = httpClient.newCall(spotanimRequest);
         call.enqueue(new Callback()
@@ -701,7 +705,7 @@ public class DataFinder
             @Override
             public void onFailure(Call call, IOException e)
             {
-                log.debug("Failed to access URL: https://raw.githubusercontent.com/ScreteMonge/cache-converter/master/.venv/spotanims.json");
+                log.debug("Failed to access URL: {}spotanims.json", config.configBaseUrl());
                 executeCallbacks(DataType.SPOTANIM);
             }
 
@@ -878,14 +882,14 @@ public class DataFinder
 
     public void lookupNPCData()
     {
-        Request request = new Request.Builder().url("https://raw.githubusercontent.com/ScreteMonge/cache-converter/master/.venv/npc_defs.json").build();
+        Request request = new Request.Builder().url(config.configBaseUrl() + "npc_defs.json").build();
         Call call = httpClient.newCall(request);
         call.enqueue(new Callback()
         {
             @Override
             public void onFailure(Call call, IOException e)
             {
-                log.debug("Failed to access URL: https://raw.githubusercontent.com/ScreteMonge/cache-converter/master/.venv/npc_defs.json");
+                log.debug("Failed to access URL: {}npc_defs.json", config.configBaseUrl());
                 executeCallbacks(DataType.NPC);
             }
 
@@ -1109,14 +1113,14 @@ public class DataFinder
 
     private void lookupObjectData()
     {
-        Request request = new Request.Builder().url("https://raw.githubusercontent.com/ScreteMonge/cache-converter/master/.venv/object_defs.json").build();
+        Request request = new Request.Builder().url(config.configBaseUrl() + "object_defs.json").build();
         Call call = httpClient.newCall(request);
         call.enqueue(new Callback()
         {
             @Override
             public void onFailure(Call call, IOException e)
             {
-                log.debug("Failed to access URL: https://raw.githubusercontent.com/ScreteMonge/cache-converter/master/.venv/object_defs.json");
+                log.debug("Failed to access URL: {}object_defs.json", config.configBaseUrl());
                 executeCallbacks(DataType.OBJECT);
             }
 
@@ -1264,14 +1268,14 @@ public class DataFinder
     {
         CountDownLatch countDownLatch = new CountDownLatch(1);
         Request itemRequest = new Request.Builder()
-                .url("https://raw.githubusercontent.com/ScreteMonge/cache-converter/master/.venv/item_defs.json")
+                .url(config.configBaseUrl() + "item_defs.json")
                 .build();
         Call itemCall = httpClient.newCall(itemRequest);
         itemCall.enqueue(new Callback() {
             @Override
             public void onFailure(Call call, IOException e)
             {
-                log.debug("Failed to access URL: https://raw.githubusercontent.com/ScreteMonge/cache-converter/master/.venv/item_defs.json");
+                log.debug("Failed to access URL: {}item_defs.json", config.configBaseUrl());
                 countDownLatch.countDown();
                 executeCallbacks(DataType.ITEM);
             }

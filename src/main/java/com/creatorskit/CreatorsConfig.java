@@ -10,6 +10,17 @@ import java.awt.event.KeyEvent;
 @ConfigGroup("creatorssuite")
 public interface CreatorsConfig extends Config
 {
+	@ConfigItem(
+			keyName = "configBaseUrl",
+			name = "Config Base URL",
+			description = "Defines where config data should be loaded from.",
+			position = 0
+	)
+	default String configBaseUrl()
+	{
+		return "https://raw.githubusercontent.com/ScreteMonge/cache-converter/master/.venv/";
+	}
+
 	@ConfigSection(
 			name = "Scene",
 			description = "Settings for setting up your scene",
