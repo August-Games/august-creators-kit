@@ -95,7 +95,18 @@ public class DataFinder
         this.gson = gson;
         this.httpClient = httpClient;
         this.config = config;
+        reloadData();
+    }
 
+    public void reloadData() {
+        npcData.clear();
+        objectData.clear();
+        spotanimData.clear();
+        itemData.clear();
+        kitData.clear();
+        seqData.clear();
+        animData.clear();
+        weaponAnimData.clear();
         lookupNPCData();
         lookupObjectData();
         lookupSpotAnimData();

@@ -405,6 +405,10 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 	@Subscribe
 	public void onConfigChanged(ConfigChanged event)
 	{
+		if (event.getKey().equals("configBaseUrl"))
+		{
+			dataFinder.reloadData();
+		}
 		if (event.getKey().equals("orbSpeed"))
 		{
 			client.setFreeCameraSpeed(config.orbSpeed());
