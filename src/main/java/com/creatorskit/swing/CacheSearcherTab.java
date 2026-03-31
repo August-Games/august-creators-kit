@@ -4,14 +4,18 @@ import com.creatorskit.Character;
 import com.creatorskit.CreatorsPlugin;
 import com.creatorskit.models.*;
 import com.creatorskit.models.datatypes.*;
+import com.creatorskit.swing.renderer.RenderPanel;
 import com.creatorskit.swing.searchabletable.JFilterableTable;
 import com.creatorskit.swing.timesheet.keyframe.AnimationKeyFrame;
-import com.creatorskit.swing.timesheet.keyframe.KeyFrame;
-import com.creatorskit.swing.timesheet.keyframe.KeyFrameType;
-import net.runelite.api.Model;
+import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
+import net.runelite.api.Client;
+import net.runelite.api.ModelData;
+import net.runelite.client.RuneLite;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.ui.ColorScheme;
 import net.runelite.client.ui.FontManager;
+import okhttp3.*;
 
 import javax.inject.Inject;
 import javax.swing.*;
@@ -19,14 +23,19 @@ import javax.swing.border.EmptyBorder;
 import javax.swing.border.LineBorder;
 import java.awt.*;
 import java.awt.event.*;
+import java.io.*;
 import java.util.ArrayList;
 import java.util.List;
 
+@Slf4j
 public class CacheSearcherTab extends JPanel
 {
+    private Client client;
     private final CreatorsPlugin plugin;
     private ClientThread clientThread;
     private final DataFinder dataFinder;
+    private final ModelUtilities modelUtilities;
+    private OkHttpClient httpClient;
 
     private final GridBagConstraints c = new GridBagConstraints();
     private final String NPC = "NPC";
@@ -34,29 +43,44 @@ public class CacheSearcherTab extends JPanel
     private final String ITEM = "ITEM";
     private final String ANIM = "ANIM";
     private final String SPOTANIM = "SPOTANIM";
+    private final String SOUND = "SOUND";
 
     private final JPanel npcPanel = new JPanel();
     private final JPanel objectPanel = new JPanel();
     private final JPanel itemPanel = new JPanel();
     private final JPanel animPanel = new JPanel();
     private final JPanel spotAnimPanel = new JPanel();
+    private final JPanel soundPanel = new JPanel();
+
+    private final JPanel previewPanel = new JPanel();
+    private final JPanel breakdownPanel = new JPanel();
+
+    @Getter
+    private RenderPanel renderPanel;
 
     private final JFilterableTable npcTable = new JFilterableTable("NPCs");
     private final JFilterableTable objectTable = new JFilterableTable("Objects");
     private final JFilterableTable itemTable = new JFilterableTable("Items");
     private final JFilterableTable animTable = new JFilterableTable("Animations");
     private final JFilterableTable spotAnimTable = new JFilterableTable("SpotAnims");
+    private final JFilterableTable soundTable = new JFilterableTable("Sounds");
+    private final JFilterableTable modelTable = new JFilterableTable("Model Id Breakdown");
 
     private final JComboBox<CustomModelType> itemType = new JComboBox<>();
-
     private final JPanel display = new JPanel();
+    public static final File SOUNDS_DIR = new File(RuneLite.RUNELITE_DIR, "creatorskit/sound-exports");
+
+    private CustomModelType selectedType;
 
     @Inject
-    public CacheSearcherTab(CreatorsPlugin plugin, ClientThread clientThread, DataFinder dataFinder)
+    public CacheSearcherTab(Client client, CreatorsPlugin plugin, ClientThread clientThread, DataFinder dataFinder, ModelUtilities modelUtilities, OkHttpClient httpClient)
     {
+        this.client = client;
         this.plugin = plugin;
         this.clientThread = clientThread;
         this.dataFinder = dataFinder;
+        this.modelUtilities = modelUtilities;
+        this.httpClient = httpClient;
 
         setBackground(ColorScheme.DARKER_GRAY_COLOR);
         setLayout(new GridBagLayout());
@@ -66,7 +90,10 @@ public class CacheSearcherTab extends JPanel
         setupItemPanel();
         setupAnimPanel();
         setupSpotAnimPanel();
+        setupSoundPanel();
         setupDisplay();
+        setupBreakdownTable();
+        setupRenderPanel();
         setupLayout();
     }
 
@@ -94,6 +121,249 @@ public class CacheSearcherTab extends JPanel
         JPanel animCard = new JPanel();
         setupAnimCard(animCard);
         display.add(animCard, ANIM);
+
+        JPanel soundCard = new JPanel();
+        setupSoundCard(soundCard);
+        display.add(soundCard, SOUND);
+    }
+
+    private void setupBreakdownTable()
+    {
+        breakdownPanel.setBackground(ColorScheme.DARK_GRAY_COLOR);
+        breakdownPanel.setBorder(new LineBorder(ColorScheme.MEDIUM_GRAY_COLOR, 1));
+        breakdownPanel.setLayout(new BorderLayout());
+        JPanel holderPanel = new JPanel();
+        holderPanel.setBorder(new EmptyBorder(8, 8, 8, 8));
+        holderPanel.setBackground(ColorScheme.DARK_GRAY_COLOR);
+        holderPanel.setLayout(new GridBagLayout());
+        breakdownPanel.add(holderPanel, BorderLayout.CENTER);
+
+        c.fill = GridBagConstraints.HORIZONTAL;
+        c.insets = new Insets(2, 2, 2, 2);
+
+        c.gridwidth = 1;
+        c.gridheight = 1;
+        c.weightx = 1;
+        c.weighty = 0;
+        c.gridx = 0;
+        c.gridy = 0;
+        JLabel title = new JLabel("Model Id Breakdown");
+        title.setFont(FontManager.getRunescapeBoldFont());
+        holderPanel.add(title, c);
+
+        c.gridx = 0;
+        c.gridy = 1;
+        c.weighty = 1;
+        modelTable.getSelectionModel().addListSelectionListener(e ->
+        {
+            boolean renderAll = false;
+            int modelId = 0;
+
+            Object o = modelTable.getSelectedObject();
+            if (o instanceof String)
+            {
+                String s = (String) o;
+                if (s.equals("All"))
+                {
+                    renderAll = true;
+                }
+            }
+
+            if (o instanceof Integer)
+            {
+                modelId = (Integer) o;
+            }
+
+            if (selectedType == null)
+            {
+                renderPanel.resetViewer();
+                return;
+            }
+
+            switch (selectedType)
+            {
+                case CACHE_NPC:
+                    Object npc = npcTable.getSelectedObject();
+                    if (npc instanceof NPCData)
+                    {
+                        NPCData data = (NPCData) npc;
+                        updateRenderPanel(CustomModelType.CACHE_NPC, data.getId(), renderAll, modelId);
+                    }
+                    break;
+                case CACHE_OBJECT:
+                    Object object = objectTable.getSelectedObject();
+                    if (object instanceof ObjectData)
+                    {
+                        ObjectData data = (ObjectData) object;
+                        updateRenderPanel(CustomModelType.CACHE_OBJECT, data.getId(), renderAll, modelId);
+                    }
+                    break;
+                case CACHE_GROUND_ITEM:
+                case CACHE_MAN_WEAR:
+                case CACHE_WOMAN_WEAR:
+                    Object item = itemTable.getSelectedObject();
+                    if (item instanceof ItemData)
+                    {
+                        ItemData data = (ItemData) item;
+                        updateRenderPanel(selectedType, data.getId(), renderAll, modelId);
+                    }
+                    break;
+                case CACHE_SPOTANIM:
+                    Object spotAnim = spotAnimTable.getSelectedObject();
+                    if (spotAnim instanceof SpotanimData)
+                    {
+                        SpotanimData data = (SpotanimData) spotAnim;
+                        updateRenderPanel(selectedType, data.getId(), renderAll, modelId);
+                    }
+                    break;
+                default:
+                    renderPanel.resetViewer();
+            }
+        });
+
+        holderPanel.add(modelTable, c);
+    }
+
+    private void updateRenderPanel(CustomModelType type, int id, boolean renderAll, int modelId)
+    {
+        ModelStats[] modelStats = new ModelStats[0];
+        LightingStyle ls = LightingStyle.DEFAULT;
+
+        switch (type)
+        {
+            case CACHE_NPC:
+                modelStats = dataFinder.findModelsForNPC(id);
+                ls = LightingStyle.ACTOR;
+                break;
+            case CACHE_OBJECT:
+                modelStats = dataFinder.findModelsForObject(id, 0, LightingStyle.DEFAULT, true);
+                break;
+            case CACHE_GROUND_ITEM:
+            case CACHE_MAN_WEAR:
+            case CACHE_WOMAN_WEAR:
+                modelStats = dataFinder.findModelsForGroundItem(id, type);
+                break;
+            case CACHE_SPOTANIM:
+                modelStats = dataFinder.findSpotAnim(id);
+                ls = LightingStyle.SPOTANIM;
+        }
+
+        if (modelStats == null || modelStats.length == 0)
+        {
+            renderPanel.resetViewer();
+            return;
+        }
+
+        LightingStyle finalLs = ls;
+        if (renderAll)
+        {
+            ModelStats[] allModelStats = modelStats;
+            clientThread.invokeLater(() ->
+            {
+                ModelData md = modelUtilities.constructModelDataFromCache(allModelStats, new int[0], false);
+                renderPanel.updateModel(md, finalLs);
+            });
+            return;
+        }
+
+        for (ModelStats modelStat : modelStats)
+        {
+            if (modelStat.getModelId() == modelId)
+            {
+                clientThread.invokeLater(() ->
+                {
+                    ModelData md = modelUtilities.constructModelDataFromCache(new ModelStats[]{modelStat}, new int[0], false);
+                    renderPanel.updateModel(md, finalLs);
+                });
+                return;
+            }
+        }
+
+        renderPanel.resetViewer();
+    }
+
+    private void updateModelBreakdownTable(int[] modelIds)
+    {
+        List<Object> dataList = new ArrayList<>();
+        Object all = "All";
+        dataList.add(all);
+
+        if (modelIds != null)
+        {
+            for (int i : modelIds)
+            {
+                Object e = i;
+                dataList.add(e);
+            }
+        }
+
+        List<Object> list = new ArrayList<>(dataList);
+        modelTable.initialize(list);
+        modelTable.searchAndListEntries("");
+        revalidate();
+    }
+
+    private void setupRenderPanel()
+    {
+        previewPanel.setLayout(new BorderLayout());
+        previewPanel.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+        previewPanel.setBorder(new LineBorder(ColorScheme.MEDIUM_GRAY_COLOR, 1));
+
+        JSlider fovSlider = new JSlider(1, 179, RenderPanel.FOV_DEFAULT);
+        previewPanel.add(fovSlider, BorderLayout.NORTH);
+
+        renderPanel = new RenderPanel(client, clientThread, fovSlider);
+        previewPanel.add(renderPanel, BorderLayout.CENTER);
+
+        JPanel footer = new JPanel();
+        footer.setLayout(new BorderLayout());
+        previewPanel.add(footer, BorderLayout.SOUTH);
+
+        JPanel controlPanel = new JPanel(new FlowLayout());
+        footer.add(controlPanel, BorderLayout.NORTH);
+
+        JButton resetButton = new JButton("Reset Camera View");
+        resetButton.setBackground(ColorScheme.DARK_GRAY_COLOR);
+        resetButton.addActionListener(e -> renderPanel.resetCameraView());
+        controlPanel.add(resetButton);
+
+        JCheckBox animate = new JCheckBox("Enable Animations");
+        animate.setSelected(true);
+        animate.addActionListener(e -> clientThread.invokeLater(() -> renderPanel.toggleAnimations(animate.isSelected())));
+        controlPanel.add(animate);
+
+        JPanel buttonPanel = new JPanel(new GridLayout(0, 3, 3, 3));
+        footer.add(buttonPanel, BorderLayout.SOUTH);
+        setupRenderPanelButtons(buttonPanel);
+    }
+
+    private void setupRenderPanelButtons(JPanel buttonPanel)
+    {
+        JButton addObject = new JButton("Store & Add");
+        addObject.setToolTipText("Stores the displayed model as a Custom Model, then creates a new Object and attaches the model");
+        buttonPanel.add(addObject);
+
+        JButton addObjectAnim = new JButton("Store/Add/Animate");
+        addObjectAnim.setToolTipText("<html>Stores the displayed model as a Custom Model, then creates a new Object and attaches the model,<br>and creates an Animation KeyFrame with the appropriate NPC animations</html>");
+        buttonPanel.add(addObjectAnim);
+
+        JButton addModel = new JButton("Store Only");
+        addModel.setToolTipText("Stores the displayed model as a new Custom Model");
+        buttonPanel.add(addModel);
+
+        JButton addAnvil = new JButton("Add to Anvil");
+        addAnvil.setToolTipText("Sends the displayed model's component models to the Model Anvil");
+        buttonPanel.add(addAnvil);
+
+        JButton export = new JButton("Export 3D");
+        export.setToolTipText("Exports the displayed 3D model");
+        buttonPanel.add(export);
+
+        addObject.addActionListener(e -> addModel(true, false));
+        addObjectAnim.addActionListener(e -> addModel(true, true));
+        addModel.addActionListener(e -> addModel(false, false));
+        addAnvil.addActionListener(e -> addToAnvil());
+        export.addActionListener(e -> export3DModel());
     }
 
     private void setupLayout()
@@ -103,8 +373,8 @@ public class CacheSearcherTab extends JPanel
 
         c.gridwidth = 1;
         c.gridheight = 1;
-        c.weightx = 2;
-        c.weighty = 1;
+        c.weightx = 0;
+        c.weighty = 0;
         c.gridx = 0;
         c.gridy = 0;
         JLabel empty = new JLabel("");
@@ -115,41 +385,51 @@ public class CacheSearcherTab extends JPanel
         c.weightx = 2;
         c.weighty = 0;
         c.gridx = 1;
-        c.gridy = 1;
+        c.gridy = 0;
         add(npcPanel, c);
 
         c.gridx = 1;
-        c.gridy = 2;
+        c.gridy = 1;
         add(objectPanel, c);
 
         c.gridx = 1;
-        c.gridy = 3;
+        c.gridy = 2;
         add(itemPanel, c);
 
         c.gridx = 1;
-        c.gridy = 4;
+        c.gridy = 3;
         add(spotAnimPanel, c);
 
         c.gridx = 1;
-        c.gridy = 5;
+        c.gridy = 4;
         add(animPanel, c);
 
         c.gridx = 1;
+        c.gridy = 5;
+        add(soundPanel, c);
+
+        c.gridx = 1;
         c.gridy = 6;
+        add(breakdownPanel, c);
+
+        c.gridx = 1;
+        c.gridy = 7;
+        c.weighty = 1;
         add(new JLabel(""), c);
 
-        c.gridheight = 6;
+        c.gridheight = 8;
         c.weighty = 5;
         c.weightx = 2;
         c.gridx = 2;
-        c.gridy = 1;
+        c.gridy = 0;
         add(display, c);
 
-        c.weighty = 1;
-        c.weightx = 2;
+        c.gridheight = 8;
+        c.weighty = 5;
+        c.weightx = 8;
         c.gridx = 3;
-        c.gridy = 7;
-        add(new JLabel(""), c);
+        c.gridy = 0;
+        add(previewPanel, c);
 
         repaint();
         revalidate();
@@ -190,69 +470,6 @@ public class CacheSearcherTab extends JPanel
 
         c.gridx = 0;
         c.gridy = 3;
-        JPanel grid = new JPanel();
-        grid.setLayout(new GridLayout(0, 4, 2, 0));
-        card.add(grid, c);
-
-        JButton addObject = new JButton("Store & Add");
-        addObject.setToolTipText("Stores the selected NPC as a Custom Model, then creates a new Object and attaches the model");
-        grid.add(addObject);
-
-        JButton addObjectAnim = new JButton("Store/Add/Animate");
-        addObjectAnim.setToolTipText("Stores the selected NPC as a Custom Model, then creates a new Object and attaches the model," +
-                "<br>and creates an Animation KeyFrame with the appropriate NPC animations");
-        grid.add(addObjectAnim);
-
-        JButton addModel = new JButton("Store Only");
-        addModel.setToolTipText("Stores the selected NPC as a new Custom Model");
-        grid.add(addModel);
-
-        JButton addAnvil = new JButton("Add to Anvil");
-        addAnvil.setToolTipText("Sends the NPC's models to the Model Anvil");
-        grid.add(addAnvil);
-
-        addObject.addActionListener(e ->
-        {
-            Object o = npcTable.getSelectedObject();
-            if (o instanceof NPCData)
-            {
-                NPCData data = (NPCData) o;
-                addNPCObject(data, false);
-            }
-        });
-
-        addObjectAnim.addActionListener(e ->
-        {
-            Object o = npcTable.getSelectedObject();
-            if (o instanceof NPCData)
-            {
-                NPCData data = (NPCData) o;
-                addNPCObject(data, true);
-            }
-        });
-
-        addModel.addActionListener(e ->
-        {
-            Object o = npcTable.getSelectedObject();
-            if (o instanceof NPCData)
-            {
-                NPCData data = (NPCData) o;
-                addCustomModel(CustomModelType.CACHE_NPC, data.getId());
-            }
-        });
-
-        addAnvil.addActionListener(e ->
-        {
-            Object o = npcTable.getSelectedObject();
-            if (o instanceof NPCData)
-            {
-                NPCData data = (NPCData) o;
-                addToAnvil(CustomModelType.CACHE_NPC, data.getId());
-            }
-        });
-
-        c.gridx = 0;
-        c.gridy = 4;
         JPanel anims = new JPanel();
         anims.setLayout(new GridLayout(0, 3, 2, 2));
         anims.setBackground(ColorScheme.DARKER_GRAY_COLOR);
@@ -292,6 +509,10 @@ public class CacheSearcherTab extends JPanel
                 walkLeft.setText("Walk Left: " + data.getRotateLeftAnimation());
                 idleRight.setText("Idle Right: " + data.getIdleRotateRightAnimation());
                 idleLeft.setText("Idle Left: " + data.getIdleRotateLeftAnimation());
+
+                selectedType = CustomModelType.CACHE_NPC;
+                updateRenderPanel(CustomModelType.CACHE_NPC, data.getId(), true, -1);
+                updateModelBreakdownTable(data.getModels());
             }
         });
     }
@@ -330,51 +551,16 @@ public class CacheSearcherTab extends JPanel
         JLabel buffer = new JLabel(" ");
         card.add(buffer, c);
 
-        c.gridx = 0;
-        c.gridy = 3;
-        JPanel grid = new JPanel();
-        grid.setLayout(new GridLayout(0, 3, 2, 0));
-        card.add(grid, c);
-
-        JButton addObject = new JButton("Store & Add");
-        addObject.setToolTipText("Stores the selected Object as a Custom Model, then creates a new Object and attaches the model");
-        grid.add(addObject);
-
-        JButton addModel = new JButton("Store Only");
-        addModel.setToolTipText("Stores the selected Object as a new Custom Model");
-        grid.add(addModel);
-
-        JButton addAnvil = new JButton("Add to Anvil");
-        addAnvil.setToolTipText("Sends the Object's models to the Model Anvil");
-        grid.add(addAnvil);
-
-        addObject.addActionListener(e ->
+        objectTable.getSelectionModel().addListSelectionListener(e ->
         {
             Object o = objectTable.getSelectedObject();
             if (o instanceof ObjectData)
             {
                 ObjectData data = (ObjectData) o;
-                addObjectObject(data);
-            }
-        });
 
-        addModel.addActionListener(e ->
-        {
-            Object o = objectTable.getSelectedObject();
-            if (o instanceof ObjectData)
-            {
-                ObjectData data = (ObjectData) o;
-                addCustomModel(CustomModelType.CACHE_OBJECT, data.getId());
-            }
-        });
-
-        addAnvil.addActionListener(e ->
-        {
-            Object o = objectTable.getSelectedObject();
-            if (o instanceof ObjectData)
-            {
-                ObjectData data = (ObjectData) o;
-                addToAnvil(CustomModelType.CACHE_OBJECT, data.getId());
+                selectedType = CustomModelType.CACHE_OBJECT;
+                updateRenderPanel(CustomModelType.CACHE_OBJECT, data.getId(), true, -1);
+                updateModelBreakdownTable(data.getObjectModels());
             }
         });
     }
@@ -415,36 +601,9 @@ public class CacheSearcherTab extends JPanel
 
         c.gridx = 0;
         c.gridy = 3;
-        JPanel grid = new JPanel();
-        grid.setLayout(new GridLayout(0, 4, 2, 0));
-        card.add(grid, c);
-
-        JButton addObject = new JButton("Store & Add");
-        addObject.setToolTipText("Stores the selected Item as a Custom Model, then creates a new Object and attaches the model");
-        grid.add(addObject);
-
         JButton addKeyFrame = new JButton("KeyFrame Animation");
         addKeyFrame.setToolTipText("Finds the animations for the given item (if a weapon) and applies it to the currently selected Object as an Animation KeyFrame");
-        grid.add(addKeyFrame);
-
-        JButton addModel = new JButton("Store Only");
-        addModel.setToolTipText("Stores the selected Item as a new Custom Model");
-        grid.add(addModel);
-
-        JButton addAnvil = new JButton("Add to Anvil");
-        addAnvil.setToolTipText("Sends the Item's models to the Model Anvil");
-        grid.add(addAnvil);
-
-        addObject.addActionListener(e ->
-        {
-            Object o = itemTable.getSelectedObject();
-            if (o instanceof ItemData)
-            {
-                CustomModelType type = (CustomModelType) itemType.getSelectedItem();
-                ItemData data = (ItemData) o;
-                addItemObject(data, type);
-            }
-        });
+        card.add(addKeyFrame, c);
 
         addKeyFrame.addActionListener(e ->
         {
@@ -467,29 +626,6 @@ public class CacheSearcherTab extends JPanel
                 plugin.getCreatorsPanel().getToolBox().getTimeSheetPanel().addAnimationKeyFrameFromCache(weaponAnimData);
             }
         });
-
-        addModel.addActionListener(e ->
-        {
-            Object o = itemTable.getSelectedObject();
-            if (o instanceof ItemData)
-            {
-                CustomModelType type = (CustomModelType) itemType.getSelectedItem();
-                ItemData data = (ItemData) o;
-                addCustomModel(type, data.getId());
-            }
-        });
-
-        addAnvil.addActionListener(e ->
-        {
-            Object o = itemTable.getSelectedObject();
-            if (o instanceof ItemData)
-            {
-                CustomModelType type = (CustomModelType) itemType.getSelectedItem();
-                ItemData data = (ItemData) o;
-                addToAnvil(type, data.getId());
-            }
-        });
-
 
         c.gridx = 0;
         c.gridy = 4;
@@ -540,6 +676,24 @@ public class CacheSearcherTab extends JPanel
             {
                 ItemData data = (ItemData) o;
                 int itemId = data.getId();
+
+                selectedType = (CustomModelType) itemType.getSelectedItem();
+                updateRenderPanel(selectedType, itemId, true, -1);
+
+                int[] modelIds;
+                switch (selectedType)
+                {
+                    default:
+                    case CACHE_GROUND_ITEM:
+                        modelIds = new int[]{data.getInventoryModel()};
+                        break;
+                    case CACHE_MAN_WEAR:
+                        modelIds = new int[]{data.getMaleModel0(), data.getMaleModel1(), data.getMaleModel2()};
+                        break;
+                    case CACHE_WOMAN_WEAR:
+                        modelIds = new int[]{data.getFemaleModel0(), data.getFemaleModel1(), data.getFemaleModel2()};
+                }
+                updateModelBreakdownTable(modelIds);
 
                 boolean foundMatch = false;
 
@@ -640,35 +794,9 @@ public class CacheSearcherTab extends JPanel
 
         c.gridx = 0;
         c.gridy = 3;
-        JPanel grid = new JPanel();
-        grid.setLayout(new GridLayout(0, 4, 2, 0));
-        card.add(grid, c);
-
-        JButton addObject = new JButton("Store & Add");
-        addObject.setToolTipText("Stores the selected SpotAnim as a Custom Model, then creates a new Object and attaches the model");
-        grid.add(addObject);
-
         JButton addKeyFrame = new JButton("KeyFrame SpotAnim");
         addKeyFrame.setToolTipText("Adds the currently selected SpotAnim as a KeyFrame to the currently selected Object");
-        grid.add(addKeyFrame);
-
-        JButton addModel = new JButton("Store Only");
-        addModel.setToolTipText("Stores the selected SpotAnim as a new Custom Model");
-        grid.add(addModel);
-
-        JButton addAnvil = new JButton("Add to Anvil");
-        addAnvil.setToolTipText("Sends the SpotAnim's models to the Model Anvil");
-        grid.add(addAnvil);
-
-        addObject.addActionListener(e ->
-        {
-            Object o = spotAnimTable.getSelectedObject();
-            if (o instanceof SpotanimData)
-            {
-                SpotanimData data = (SpotanimData) o;
-                addSpotAnimObject(data);
-            }
-        });
+        card.add(addKeyFrame, c);
 
         addKeyFrame.addActionListener(e ->
         {
@@ -685,23 +813,16 @@ public class CacheSearcherTab extends JPanel
             }
         });
 
-        addModel.addActionListener(e ->
+        spotAnimTable.getSelectionModel().addListSelectionListener(e ->
         {
             Object o = spotAnimTable.getSelectedObject();
             if (o instanceof SpotanimData)
             {
                 SpotanimData data = (SpotanimData) o;
-                addCustomModel(CustomModelType.CACHE_SPOTANIM, data.getId());
-            }
-        });
 
-        addAnvil.addActionListener(e ->
-        {
-            Object o = spotAnimTable.getSelectedObject();
-            if (o instanceof SpotanimData)
-            {
-                SpotanimData data = (SpotanimData) o;
-                addToAnvil(CustomModelType.CACHE_SPOTANIM, data.getId());
+                selectedType = CustomModelType.CACHE_SPOTANIM;
+                updateRenderPanel(CustomModelType.CACHE_SPOTANIM, data.getId(), true, -1);
+                updateModelBreakdownTable(new int[]{data.getModelId()});
             }
         });
     }
@@ -731,6 +852,17 @@ public class CacheSearcherTab extends JPanel
         JScrollPane scrollPane = new JScrollPane(animTable);
         scrollPane.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_ALWAYS);
         card.add(scrollPane, c);
+
+        animTable.getSelectionModel().addListSelectionListener(e ->
+        {
+            Object o = animTable.getSelectedObject();
+            if (o instanceof AnimData)
+            {
+                AnimData data = (AnimData) o;
+                int animId = data.getId();
+                clientThread.invokeLater(() -> renderPanel.updateAnimation(client.loadAnimation(animId)));
+            }
+        });
 
         animTable.addMouseListener(new MouseAdapter()
         {
@@ -763,8 +895,106 @@ public class CacheSearcherTab extends JPanel
 
         c.gridx = 0;
         c.gridy = 3;
-        JLabel instructionLabel = new JLabel("Double click any Animation to set it to the currently selected Object");
+        JLabel instructionLabel = new JLabel("<html>Select an Animation to play it in the renderer to the right (if a Model is being displayed)<br>Double click an Animation to set it to the currently selected Object</html>");
         card.add(instructionLabel, c);
+    }
+
+    private void setupSoundCard(JPanel card)
+    {
+        card.setLayout(new GridBagLayout());
+        card.setBorder(new EmptyBorder(8, 8, 8, 8));
+        c.fill = GridBagConstraints.BOTH;
+        c.insets = new Insets(2, 2, 2, 2);
+
+        c.gridwidth = 1;
+        c.gridheight = 1;
+        c.weightx = 0;
+        c.weighty = 0;
+        c.gridx = 0;
+        c.gridy = 0;
+        JLabel title = new JLabel("Sounds Found:");
+        title.setFont(new Font(FontManager.getRunescapeBoldFont().getName(), Font.PLAIN, 32));
+        title.setHorizontalAlignment(SwingConstants.LEFT);
+        card.add(title, c);
+
+        c.weightx = 1;
+        c.weighty = 1;
+        c.gridx = 0;
+        c.gridy = 1;
+        JScrollPane scrollPane = new JScrollPane(soundTable);
+        scrollPane.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_ALWAYS);
+        card.add(scrollPane, c);
+
+        c.weightx = 0;
+        c.weighty = 0;
+        c.gridx = 0;
+        c.gridy = 2;
+        JLabel buffer = new JLabel(" ");
+        card.add(buffer, c);
+
+        c.gridx = 0;
+        c.gridy = 3;
+        JLabel instructionLabel = new JLabel("Select any sound to play. Ensure you're logged in, and that Sound Effects volume is up/not muted.");
+        card.add(instructionLabel, c);
+
+        c.gridx = 0;
+        c.gridy = 4;
+        JButton export = new JButton("Export Sound File");
+        card.add(export, c);
+
+        export.addActionListener((e ->
+        {
+            Object o = soundTable.getSelectedObject();
+            if (o == null)
+            {
+                return;
+            }
+
+            if (o instanceof SoundData)
+            {
+                SoundData sd = (SoundData) o;
+                String url = "https://github.com/ScreteMonge/Sound-Effect-Cache/raw/refs/heads/main/.idea/SoundEffects/" + sd.createLookupName() + ".wav";
+
+                Request request = new Request.Builder().url(url).build();
+                Call call = httpClient.newCall(request);
+                call.enqueue(new Callback()
+                {
+                    @Override
+                    public void onFailure(Call call, IOException e)
+                    {
+                        log.debug("Failed to access URL: " + url);
+                        plugin.sendChatMessage("This sound file could not be found.");
+                    }
+
+                    @Override
+                    public void onResponse(Call call, Response response) throws IOException
+                    {
+                        if (response.isSuccessful() && response.body() != null)
+                        {
+                            InputStream inputStream = response.body().byteStream();
+
+                            if (!SOUNDS_DIR.exists())
+                            {
+                                SOUNDS_DIR.mkdirs();
+                            }
+
+                            FileOutputStream outputStream = new FileOutputStream(new File(SOUNDS_DIR, sd + ".wav"));
+                            byte[] buffer = new byte[8192];
+                            int bytesRead;
+                            while ((bytesRead = inputStream.read(buffer)) != -1)
+                            {
+                                outputStream.write(buffer, 0, bytesRead);
+                            }
+                            outputStream.close();
+                            inputStream.close();
+
+                            plugin.sendChatMessage("Exported " + sd + ".wav to your /.runelite/creatorskit/sound-exports directory.");
+                            response.body().close();
+                        }
+                    }
+                });
+            }
+        }));
     }
 
     private void switchCards(String cardName)
@@ -999,6 +1229,45 @@ public class CacheSearcherTab extends JPanel
         itemType.addItem(CustomModelType.CACHE_GROUND_ITEM);
         itemType.addItem(CustomModelType.CACHE_MAN_WEAR);
         itemType.addItem(CustomModelType.CACHE_WOMAN_WEAR);
+        itemType.addFocusListener(new FocusListener()
+        {
+            @Override
+            public void focusGained(FocusEvent e) {
+                switchCards(ITEM);
+            }
+
+            @Override
+            public void focusLost(FocusEvent e) {
+
+            }
+        });
+
+        itemType.addItemListener(e ->
+        {
+            Object o = itemTable.getSelectedObject();
+            if (o instanceof ItemData)
+            {
+                ItemData data = (ItemData) o;
+
+                CustomModelType type = (CustomModelType) itemType.getSelectedItem();
+                updateRenderPanel(type, data.getId(), true, -1);
+
+                int[] modelIds;
+                switch (type)
+                {
+                    default:
+                    case CACHE_GROUND_ITEM:
+                        modelIds = new int[]{data.getInventoryModel()};
+                        break;
+                    case CACHE_MAN_WEAR:
+                        modelIds = new int[]{data.getMaleModel0(), data.getMaleModel1(), data.getMaleModel2()};
+                        break;
+                    case CACHE_WOMAN_WEAR:
+                        modelIds = new int[]{data.getFemaleModel0(), data.getFemaleModel1(), data.getFemaleModel2()};
+                }
+                updateModelBreakdownTable(modelIds);
+            }
+        });
         holderPanel.add(itemType, c);
 
         c.gridwidth = 1;
@@ -1259,288 +1528,384 @@ public class CacheSearcherTab extends JPanel
         }
     }
 
-    private void addToAnvil(CustomModelType type, int id)
+    private void setupSoundPanel()
     {
-        plugin.cacheToAnvil(type, id);
-    }
+        soundPanel.setBackground(ColorScheme.DARK_GRAY_COLOR);
+        soundPanel.setBorder(new LineBorder(ColorScheme.MEDIUM_GRAY_COLOR, 1));
+        soundPanel.setLayout(new BorderLayout());
+        JPanel holderPanel = new JPanel();
+        holderPanel.setBorder(new EmptyBorder(8, 8, 8, 8));
+        holderPanel.setBackground(ColorScheme.DARK_GRAY_COLOR);
+        holderPanel.setLayout(new GridBagLayout());
+        soundPanel.add(holderPanel, BorderLayout.CENTER);
 
-    private void addCustomModel(CustomModelType type, int id)
-    {
-        plugin.cacheToCustomModel(type, id, -1);
-    }
+        c.fill = GridBagConstraints.HORIZONTAL;
+        c.insets = new Insets(2, 2, 2, 2);
 
-    private void addItemObject(int id, CustomModelType customModelType)
-    {
-        List<ItemData> data = dataFinder.getItemData();
-        for (ItemData n : data)
+        c.gridwidth = 2;
+        c.gridheight = 1;
+        c.weightx = 1;
+        c.weighty = 0;
+        c.gridx = 0;
+        c.gridy = 0;
+        JLabel title = new JLabel("Sound Searcher");
+        title.setFont(FontManager.getRunescapeBoldFont());
+        holderPanel.add(title, c);
+
+        c.gridwidth = 1;
+        c.weightx = 0;
+        c.gridx = 0;
+        c.gridy = 1;
+        JLabel nameLabel = new JLabel("Sound name: ");
+        nameLabel.setHorizontalAlignment(SwingConstants.RIGHT);
+        holderPanel.add(nameLabel, c);
+
+        c.gridwidth = 1;
+        c.weightx = 1;
+        c.gridx = 1;
+        c.gridy = 1;
+        JTextField field = new JTextField("");
+        field.setFont(FontManager.getRunescapeBoldFont());
+        field.setForeground(ColorScheme.BRAND_ORANGE);
+        holderPanel.add(field, c);
+
+        field.addFocusListener(new FocusListener()
         {
-            if (n.getId() == id)
+            @Override
+            public void focusGained(FocusEvent e)
             {
-                addItemObject(n, customModelType);
-                return;
+                switchCards(SOUND);
             }
-        }
 
-        plugin.sendChatMessage("Could not find the Item you were looking for in the cache.");
-    }
-
-    private void addItemObject(ItemData data, CustomModelType customModelType)
-    {
-        ModelStats[] modelStats = dataFinder.findModelsForGroundItem(data.getId(), customModelType);
-        if (modelStats == null || modelStats.length == 0)
-        {
-            plugin.sendChatMessage("Could not find the Item you were looking for in the cache.");
-            return;
-        }
-
-        clientThread.invokeLater(() ->
-        {
-            LightingStyle ls;
-
-            switch (customModelType)
+            @Override
+            public void focusLost(FocusEvent e)
             {
-                default:
-                case CACHE_GROUND_ITEM:
-                    ls = LightingStyle.DEFAULT;
-                    break;
-                case CACHE_MAN_WEAR:
-                case CACHE_WOMAN_WEAR:
-                    ls = LightingStyle.ACTOR;
+
             }
-
-            CustomLighting lighting = new CustomLighting(
-                    ls.getAmbient(),
-                    ls.getContrast(),
-                    ls.getX(),
-                    ls.getY(),
-                    ls.getZ());
-
-            Model model = plugin.constructModelFromCache(modelStats, new int[0], false, ls, lighting);
-
-            CustomModelComp comp = new CustomModelComp(0, customModelType, data.getId(), modelStats, null, null, null, LightingStyle.DEFAULT, lighting, false, data.getName());
-            CustomModel customModel = new CustomModel(model, comp);
-            plugin.addCustomModel(customModel, false);
-
-            CreatorsPanel creatorsPanel = plugin.getCreatorsPanel();
-            Character character = creatorsPanel.createCharacter(
-                    ParentPanel.SIDE_PANEL,
-                    data.getName(),
-                    7699,
-                    customModel,
-                    true,
-                    0,
-                    -1,
-                    -1,
-                    60,
-                    new KeyFrame[KeyFrameType.getTotalFrameTypes()][],
-                    KeyFrameType.createDefaultSummary(),
-                    creatorsPanel.getRandomColor(),
-                    false,
-                    null,
-                    null,
-                    -1,
-                    false,
-                    false,
-                    false);
-
-            SwingUtilities.invokeLater(() -> creatorsPanel.addPanel(ParentPanel.SIDE_PANEL, character, true, false));
         });
-    }
 
-    private void addObjectObject(int id)
-    {
-        List<ObjectData> data = dataFinder.getObjectData();
-        for (ObjectData n : data)
-        {
-            if (n.getId() == id)
-            {
-                addObjectObject(n);
-                return;
+        KeyListener keyListener = new KeyListener() {
+            @Override
+            public void keyTyped(KeyEvent e) {
+
             }
-        }
 
-        plugin.sendChatMessage("Could not find the Object you were looking for in the cache.");
-    }
+            @Override
+            public void keyPressed(KeyEvent e) {
 
-    private void addObjectObject(ObjectData data)
-    {
-        ModelStats[] modelStats = dataFinder.findModelsForObject(data.getId(), -1, LightingStyle.DEFAULT, true);
-        if (modelStats == null || modelStats.length == 0)
-        {
-            plugin.sendChatMessage("Could not find the Object you were looking for in the cache.");
-            return;
-        }
-
-        clientThread.invokeLater(() ->
-        {
-            CustomLighting lighting = new CustomLighting(64, 768, -50, -50, 10);
-            Model model = plugin.constructModelFromCache(modelStats, new int[0], false, LightingStyle.DEFAULT, lighting);
-            CustomModelComp comp = new CustomModelComp(0, CustomModelType.CACHE_OBJECT, data.getId(), modelStats, null, null, null, LightingStyle.DEFAULT, lighting, false, data.getName());
-            CustomModel customModel = new CustomModel(model, comp);
-            plugin.addCustomModel(customModel, false);
-
-            CreatorsPanel creatorsPanel = plugin.getCreatorsPanel();
-            Character character = creatorsPanel.createCharacter(
-                    ParentPanel.SIDE_PANEL,
-                    data.getName(),
-                    7699,
-                    customModel,
-                    true,
-                    0,
-                    data.getAnimationId(),
-                    -1,
-                    60,
-                    new KeyFrame[KeyFrameType.getTotalFrameTypes()][],
-                    KeyFrameType.createDefaultSummary(),
-                    creatorsPanel.getRandomColor(),
-                    false,
-                    null,
-                    null,
-                    -1,
-                    false,
-                    false,
-                    false);
-
-            SwingUtilities.invokeLater(() -> creatorsPanel.addPanel(ParentPanel.SIDE_PANEL, character, true, false));
-        });
-    }
-
-    private void addNPCObject(int id)
-    {
-        List<NPCData> data = dataFinder.getNpcData();
-        for (NPCData n : data)
-        {
-            if (n.getId() == id)
-            {
-                addNPCObject(n, false);
-                return;
             }
-        }
 
-        plugin.sendChatMessage("Could not find the NPC you were looking for in the cache.");
-    }
-
-    private void addNPCObject(NPCData data, boolean addAnimKeyFrame)
-    {
-        ModelStats[] modelStats = dataFinder.findModelsForNPC(data.getId());
-        if (modelStats == null || modelStats.length == 0)
-        {
-            plugin.sendChatMessage("Could not find the NPC you were looking for in the cache.");
-            return;
-        }
-
-        clientThread.invokeLater(() ->
-        {
-            CustomLighting lighting = new CustomLighting(64, 850, -30, -30, 50);
-            Model model = plugin.constructModelFromCache(modelStats, new int[0], false, LightingStyle.ACTOR, lighting);
-            CustomModelComp comp = new CustomModelComp(0, CustomModelType.CACHE_NPC, data.getId(), modelStats, null, null, null, LightingStyle.ACTOR, lighting, false, data.getName());
-            CustomModel customModel = new CustomModel(model, comp);
-            plugin.addCustomModel(customModel, false);
-
-            CreatorsPanel creatorsPanel = plugin.getCreatorsPanel();
-            Character character = creatorsPanel.createCharacter(
-                    ParentPanel.SIDE_PANEL,
-                    data.getName(),
-                    7699,
-                    customModel,
-                    true,
-                    0,
-                    data.getStandingAnimation(),
-                    -1,
-                    data.getSize() * 60,
-                    new KeyFrame[KeyFrameType.getTotalFrameTypes()][],
-                    KeyFrameType.createDefaultSummary(),
-                    creatorsPanel.getRandomColor(),
-                    false,
-                    null,
-                    null,
-                    -1,
-                    false,
-                    false,
-                    false);
-
-            SwingUtilities.invokeLater(() -> creatorsPanel.addPanel(ParentPanel.SIDE_PANEL, character, true, false));
-
-            if (addAnimKeyFrame)
+            @Override
+            public void keyReleased(KeyEvent e)
             {
-                AnimationKeyFrame keyFrame = new AnimationKeyFrame(
-                        plugin.getCurrentTick(),
-                        false,
-                        -1,
-                        0,
-                        false,
-                        false,
-                        data.getStandingAnimation(),
-                        data.getWalkingAnimation(),
-                        data.getRunAnimation(),
-                        data.getRotate180Animation(),
-                        data.getRotateRightAnimation(),
-                        data.getRotateLeftAnimation(),
-                        data.getIdleRotateRightAnimation(),
-                        data.getIdleRotateRightAnimation());
+                switchCards(SOUND);
+                String text = field.getText();
+                soundTable.searchAndListEntries(text);
+            }
+        };
+        field.addKeyListener(keyListener);
 
-                character.setKeyFrames(new KeyFrame[]{keyFrame}, KeyFrameType.ANIMATION);
-                creatorsPanel.getToolBox().getProgrammer().updateProgram(character);
+        if (dataFinder.isDataLoaded(DataFinder.DataType.SOUND))
+        {
+            List<SoundData> dataList = dataFinder.getSoundData();
+            List<Object> list = new ArrayList<>(dataList);
+            soundTable.initialize(list);
+        }
+        else
+        {
+            dataFinder.addLoadCallback(DataFinder.DataType.SOUND, () ->
+            {
+                List<SoundData> dataList = dataFinder.getSoundData();
+                List<Object> list = new ArrayList<>(dataList);
+                soundTable.initialize(list);
+            });
+        }
+
+        soundTable.getSelectionModel().addListSelectionListener(e ->
+        {
+            Object o = soundTable.getSelectedObject();
+            if (o instanceof SoundData)
+            {
+                SoundData data = (SoundData) o;
+                clientThread.invokeLater(() -> plugin.getClient().playSoundEffect(data.getId()));
             }
         });
     }
 
-    private void addSpotAnimObject(int id)
+    private void addModel(boolean addObject, boolean addAnimationKeyframe)
     {
-        List<SpotanimData> data = dataFinder.getSpotanimData();
-        for (SpotanimData n : data)
+        if (selectedType == null)
         {
-            if (n.getId() == id)
-            {
-                addSpotAnimObject(n);
-                return;
-            }
-        }
-
-        plugin.sendChatMessage("Could not find the SpotAnim you were looking for in the cache.");
-    }
-
-    private void addSpotAnimObject(SpotanimData data)
-    {
-        ModelStats[] modelStats = dataFinder.findSpotAnim(data);
-        if (modelStats == null || modelStats.length == 0)
-        {
-            plugin.sendChatMessage("Could not find the SpotAnim you were looking for in the cache.");
             return;
         }
 
-        clientThread.invokeLater(() ->
+        String name = "Unnamed";
+        int id = 0;
+        int size = 1;
+        int animId = -1;
+        AnimationKeyFrame akf = null;
+
+        switch (selectedType)
         {
-            LightingStyle ls = LightingStyle.SPOTANIM;
-            CustomLighting lighting = new CustomLighting(ls.getAmbient() + data.getAmbient(), ls.getContrast() + data.getContrast(), ls.getX(), ls.getY(), ls.getZ());
-            Model model = plugin.constructModelFromCache(modelStats, new int[0], false, LightingStyle.CUSTOM, lighting);
-            CustomModelComp comp = new CustomModelComp(0, CustomModelType.CACHE_SPOTANIM, data.getId(), modelStats, null, null, null, LightingStyle.CUSTOM, lighting, false, data.getName());
-            CustomModel customModel = new CustomModel(model, comp);
-            plugin.addCustomModel(customModel, false);
+            case CACHE_NPC:
+                Object npc = npcTable.getSelectedObject();
+                if (npc instanceof NPCData)
+                {
+                    NPCData data = (NPCData) npc;
+                    name = data.getName();
+                    id = data.getId();
+                    size = data.getSize();
+                    animId = data.getStandingAnimation();
 
-            CreatorsPanel creatorsPanel = plugin.getCreatorsPanel();
-            Character character = creatorsPanel.createCharacter(
-                    ParentPanel.SIDE_PANEL,
-                    data.getName(),
-                    7699,
-                    customModel,
-                    true,
-                    0,
-                    data.getAnimationId(),
-                    -1,
-                    60,
-                    new KeyFrame[KeyFrameType.getTotalFrameTypes()][],
-                    KeyFrameType.createDefaultSummary(),
-                    creatorsPanel.getRandomColor(),
-                    false,
-                    null,
-                    null,
-                    -1,
-                    false,
-                    false,
-                    false);
+                    if (addAnimationKeyframe)
+                    {
+                        akf = new AnimationKeyFrame(
+                                plugin.getCurrentTick(),
+                                false,
+                                -1,
+                                0,
+                                false,
+                                false,
+                                data.getStandingAnimation(),
+                                data.getWalkingAnimation(),
+                                data.getRunAnimation(),
+                                data.getRotate180Animation(),
+                                data.getRotateRightAnimation(),
+                                data.getRotateLeftAnimation(),
+                                data.getIdleRotateRightAnimation(),
+                                data.getIdleRotateRightAnimation());
+                    }
+                }
+                break;
+            case CACHE_OBJECT:
+                Object obj = objectTable.getSelectedObject();
+                if (obj instanceof ObjectData)
+                {
+                    ObjectData data = (ObjectData) obj;
+                    name = data.getName();
+                    id = data.getId();
+                    animId = data.getAnimationId();
 
-            SwingUtilities.invokeLater(() -> creatorsPanel.addPanel(ParentPanel.SIDE_PANEL, character, true, false));
-        });
+                    if (addAnimationKeyframe)
+                    {
+                        akf = new AnimationKeyFrame(
+                                plugin.getCurrentTick(),
+                                false,
+                                -1,
+                                0,
+                                false,
+                                false,
+                                data.getAnimationId(),
+                                -1,
+                                -1,
+                                -1,
+                                -1,
+                                -1,
+                                -1,
+                                -1);
+                    }
+                }
+                break;
+            case CACHE_GROUND_ITEM:
+            case CACHE_MAN_WEAR:
+            case CACHE_WOMAN_WEAR:
+                Object item = itemTable.getSelectedObject();
+                if (item instanceof ItemData)
+                {
+                    ItemData data = (ItemData) item;
+                    name = data.getName();
+                    id = data.getId();
+                }
+                break;
+            case CACHE_SPOTANIM:
+                Object sa = spotAnimTable.getSelectedObject();
+                if (sa instanceof SpotanimData)
+                {
+                    SpotanimData data = (SpotanimData) sa;
+                    name = data.getName();
+                    id = data.getId();
+                    animId = data.getAnimationId();
+
+                    if (addAnimationKeyframe)
+                    {
+                        akf = new AnimationKeyFrame(
+                                plugin.getCurrentTick(),
+                                false,
+                                -1,
+                                0,
+                                false,
+                                false,
+                                data.getAnimationId(),
+                                -1,
+                                -1,
+                                -1,
+                                -1,
+                                -1,
+                                -1,
+                                -1);
+                    }
+                }
+        }
+
+        Object anim = animTable.getSelectedObject();
+        if (anim instanceof AnimData)
+        {
+            AnimData data = (AnimData) anim;
+            animId = data.getId();
+        }
+
+        modelUtilities.cacheToCustomModel(selectedType, id, -1, size, name, animId, addObject, akf);
+    }
+
+    private void addToAnvil()
+    {
+        if (selectedType == null)
+        {
+            return;
+        }
+
+        int id = 0;
+
+        switch (selectedType)
+        {
+            case CACHE_NPC:
+                Object npc = npcTable.getSelectedObject();
+                if (npc instanceof NPCData)
+                {
+                    NPCData data = (NPCData) npc;
+                    id = data.getId();
+                }
+                break;
+            case CACHE_OBJECT:
+                Object obj = objectTable.getSelectedObject();
+                if (obj instanceof ObjectData)
+                {
+                    ObjectData data = (ObjectData) obj;
+                    id = data.getId();
+                }
+                break;
+            case CACHE_GROUND_ITEM:
+            case CACHE_MAN_WEAR:
+            case CACHE_WOMAN_WEAR:
+                Object item = itemTable.getSelectedObject();
+                if (item instanceof ItemData)
+                {
+                    ItemData data = (ItemData) item;
+                    id = data.getId();
+                }
+                break;
+            case CACHE_SPOTANIM:
+                Object sa = spotAnimTable.getSelectedObject();
+                if (sa instanceof SpotanimData)
+                {
+                    SpotanimData data = (SpotanimData) sa;
+                    id = data.getId();
+                }
+        }
+
+        boolean renderAll = false;
+        int modelId = 0;
+
+        Object o = modelTable.getSelectedObject();
+        if (o == null)
+        {
+            modelUtilities.cacheToAnvil(selectedType, id, true, -1);
+            return;
+        }
+
+        if (o instanceof String)
+        {
+            String s = (String) o;
+            if (s.equals("All"))
+            {
+                renderAll = true;
+            }
+        }
+
+        if (o instanceof Integer)
+        {
+            modelId = (Integer) o;
+        }
+
+        modelUtilities.cacheToAnvil(selectedType, id, renderAll, modelId);
+    }
+
+    private void export3DModel()
+    {
+        if (selectedType == null)
+        {
+            return;
+        }
+
+        int id = 0;
+        String name = "Unnamed";
+
+        switch (selectedType)
+        {
+            case CACHE_NPC:
+                Object npc = npcTable.getSelectedObject();
+                if (npc instanceof NPCData)
+                {
+                    NPCData data = (NPCData) npc;
+                    name = data.getName();
+                    id = data.getId();
+                }
+                break;
+            case CACHE_OBJECT:
+                Object obj = objectTable.getSelectedObject();
+                if (obj instanceof ObjectData)
+                {
+                    ObjectData data = (ObjectData) obj;
+                    name = data.getName();
+                    id = data.getId();
+                }
+                break;
+            case CACHE_GROUND_ITEM:
+            case CACHE_MAN_WEAR:
+            case CACHE_WOMAN_WEAR:
+                Object item = itemTable.getSelectedObject();
+                if (item instanceof ItemData)
+                {
+                    ItemData data = (ItemData) item;
+                    name = data.getName();
+                    id = data.getId();
+                }
+                break;
+            case CACHE_SPOTANIM:
+                Object sa = spotAnimTable.getSelectedObject();
+                if (sa instanceof SpotanimData)
+                {
+                    SpotanimData data = (SpotanimData) sa;
+                    name = data.getName();
+                    id = data.getId();
+                }
+        }
+
+        ModelGetter modelGetter = plugin.getModelGetter();
+        boolean renderAll = false;
+        int modelId = 0;
+
+        Object o = modelTable.getSelectedObject();
+        if (o == null)
+        {
+            modelGetter.exportModelFromCache(selectedType, id, name, true, -1);;
+            return;
+        }
+
+        if (o instanceof String)
+        {
+            String s = (String) o;
+            if (s.equals("All"))
+            {
+                renderAll = true;
+            }
+        }
+
+        if (o instanceof Integer)
+        {
+            modelId = (Integer) o;
+        }
+
+        modelGetter.exportModelFromCache(selectedType, id, name, renderAll, modelId);
     }
 }

@@ -15,6 +15,7 @@ import com.creatorskit.swing.timesheet.keyframe.AnimationKeyFrame;
 import com.creatorskit.swing.timesheet.keyframe.KeyFrame;
 import com.creatorskit.swing.timesheet.keyframe.KeyFrameType;
 import com.creatorskit.swing.timesheet.keyframe.SpotAnimKeyFrame;
+import lombok.Getter;
 import net.runelite.api.*;
 import net.runelite.api.Menu;
 import net.runelite.api.coords.LocalPoint;
@@ -37,11 +38,15 @@ public class ModelGetter
     private final CreatorsConfig config;
     private final CreatorsPlugin plugin;
     private final DataFinder dataFinder;
+    @Getter
     private final ModelExporter modelExporter;
+    private final ModelUtilities modelUtilities;
+
     private CKObject exportObject;
+    private final String DEFAULT_NAME = "Name";
 
     @Inject
-    public ModelGetter(Client client, ClientThread clientThread, CreatorsConfig config, CreatorsPlugin plugin, DataFinder dataFinder, ModelExporter modelExporter)
+    public ModelGetter(Client client, ClientThread clientThread, CreatorsConfig config, CreatorsPlugin plugin, DataFinder dataFinder, ModelExporter modelExporter, ModelUtilities modelUtilities)
     {
         this.client = client;
         this.clientThread = clientThread;
@@ -49,6 +54,7 @@ public class ModelGetter
         this.plugin = plugin;
         this.dataFinder = dataFinder;
         this.modelExporter = modelExporter;
+        this.modelUtilities = modelUtilities;
     }
 
     public void addCharacterMenuEntries(Tile tile)
@@ -314,7 +320,7 @@ public class ModelGetter
 
         if (menuOption == ModelMenuOption.ANVIL)
         {
-            handleAnvilOption(modelStats, new int[0], false, name);
+            handleAnvilOption(modelStats, new int[0], CustomModelType.CACHE_NPC, name);
             return;
         }
 
@@ -552,7 +558,7 @@ public class ModelGetter
                 int anim = dataFinder.getLastAnim();
                 Model model = modelData.light(lighting.getAmbient(), lighting.getContrast(), lighting.getX(), lighting.getZ() * -1, lighting.getY());
                 CustomModel customModel = new CustomModel(model, comp);
-                plugin.addCustomModel(customModel, false);
+                modelUtilities.addCustomModel(customModel, false);
                 plugin.sendChatMessage("Model stored: " + name + "; Anim: " + anim + "; Ambient/Contrast: " + lighting.getAmbient() + "/" + lighting.getContrast());
                 CreatorsPanel creatorsPanel = plugin.getCreatorsPanel();
 
@@ -663,7 +669,7 @@ public class ModelGetter
 
         if (menuOption == ModelMenuOption.ANVIL)
         {
-            handleAnvilOption(modelStats, colours, true, name);
+            handleAnvilOption(modelStats, colours, CustomModelType.CACHE_PLAYER, name);
             return;
         }
 
@@ -673,24 +679,54 @@ public class ModelGetter
         {
             int itemId = player.getPlayerComposition().getEquipmentId(KitType.WEAPON);
             WeaponAnimData weaponAnim = dataFinder.findWeaponAnimData(itemId);
-            if (weaponAnim != null)
+
+            int idle;
+            int walk;
+            int run;
+            int rotate180;
+            int rotateRight;
+            int rotateLeft;
+            int idleRotateRight;
+            int idleRotateLeft;
+
+            if (weaponAnim == null)
             {
-                akf = new AnimationKeyFrame(
-                        plugin.getCurrentTick(),
-                        false,
-                        player.getAnimation(),
-                        0,
-                        false,
-                        false,
-                        WeaponAnimData.getAnimation(weaponAnim, PlayerAnimationType.IDLE),
-                        WeaponAnimData.getAnimation(weaponAnim, PlayerAnimationType.WALK),
-                        WeaponAnimData.getAnimation(weaponAnim, PlayerAnimationType.RUN),
-                        WeaponAnimData.getAnimation(weaponAnim, PlayerAnimationType.ROTATE_180),
-                        WeaponAnimData.getAnimation(weaponAnim, PlayerAnimationType.ROTATE_RIGHT),
-                        WeaponAnimData.getAnimation(weaponAnim, PlayerAnimationType.ROTATE_LEFT),
-                        WeaponAnimData.getAnimation(weaponAnim, PlayerAnimationType.IDLE_ROTATE_RIGHT),
-                        WeaponAnimData.getAnimation(weaponAnim, PlayerAnimationType.IDLE_ROTATE_LEFT));
+                idle = WeaponAnimData.IDLE_UNARMED;
+                walk = WeaponAnimData.WALK_UNARMED;
+                run = WeaponAnimData.RUN_UNARMED;
+                rotate180 = WeaponAnimData.ROTATE_180;
+                rotateRight = WeaponAnimData.ROTATE_RIGHT;
+                rotateLeft = WeaponAnimData.ROTATE_LEFT;
+                idleRotateRight = WeaponAnimData.IDLE_ROTATE_RIGHT_UNARMED;
+                idleRotateLeft = WeaponAnimData.IDLE_ROTATE_LEFT_UNARMED;
             }
+            else
+            {
+                idle = WeaponAnimData.getAnimation(weaponAnim, PlayerAnimationType.IDLE);
+                walk = WeaponAnimData.getAnimation(weaponAnim, PlayerAnimationType.WALK);
+                run = WeaponAnimData.getAnimation(weaponAnim, PlayerAnimationType.RUN);
+                rotate180 = WeaponAnimData.getAnimation(weaponAnim, PlayerAnimationType.ROTATE_180);
+                rotateRight = WeaponAnimData.getAnimation(weaponAnim, PlayerAnimationType.ROTATE_RIGHT);
+                rotateLeft = WeaponAnimData.getAnimation(weaponAnim, PlayerAnimationType.ROTATE_LEFT);
+                idleRotateRight = WeaponAnimData.getAnimation(weaponAnim, PlayerAnimationType.IDLE_ROTATE_RIGHT);
+                idleRotateLeft = WeaponAnimData.getAnimation(weaponAnim, PlayerAnimationType.IDLE_ROTATE_LEFT);
+            }
+
+            akf = new AnimationKeyFrame(
+                    plugin.getCurrentTick(),
+                    false,
+                    player.getAnimation(),
+                    0,
+                    false,
+                    false,
+                    idle,
+                    walk,
+                    run,
+                    rotate180,
+                    rotateRight,
+                    rotateLeft,
+                    idleRotateRight,
+                    idleRotateLeft);
 
             int i = 0;
             for (ActorSpotAnim actorSpotAnim : actorSpotAnims)
@@ -911,7 +947,7 @@ public class ModelGetter
 
         if (menuOption == ModelMenuOption.ANVIL)
         {
-            handleAnvilOption(modelStats, new int[0], false, name);
+            handleAnvilOption(modelStats, new int[0], CustomModelType.CACHE_OBJECT, name);
             return;
         }
 
@@ -1166,7 +1202,7 @@ public class ModelGetter
                         switch (comp.getType())
                         {
                             case FORGED:
-                                ModelData modelData = plugin.createComplexModelData(comp.getDetailedModels());
+                                ModelData modelData = modelUtilities.createComplexModelData(comp.getDetailedModels());
                                 initiateAnimationExport(animId, name, modelData.light(), bm);
                                 break;
                             default:
@@ -1192,6 +1228,7 @@ public class ModelGetter
                     int modelId = (int) character.getModelSpinner().getValue();
                     ModelStats[] modelStats = new ModelStats[]{new ModelStats(
                             modelId,
+                            DEFAULT_NAME,
                             BodyPart.NA,
                             new short[0],
                             new short[0],
@@ -1268,7 +1305,7 @@ public class ModelGetter
                     switch (comp.getType())
                     {
                         case FORGED:
-                            modelData = plugin.createComplexModelData(comp.getDetailedModels());
+                            modelData = modelUtilities.createComplexModelData(comp.getDetailedModels());
                             bm = modelExporter.bmFaceColoursForForgedModel(
                                     modelData,
                                     vX,
@@ -1360,6 +1397,7 @@ public class ModelGetter
                 int modelId = (int) character.getModelSpinner().getValue();
                 ModelStats[] modelStats = new ModelStats[]{new ModelStats(
                         modelId,
+                        DEFAULT_NAME,
                         BodyPart.NA,
                         new short[0],
                         new short[0],
@@ -1445,7 +1483,7 @@ public class ModelGetter
 
         if (menuOption == ModelMenuOption.ANVIL)
         {
-            handleAnvilOption(modelStats, new int[0], false, name);
+            handleAnvilOption(modelStats, new int[0], CustomModelType.CACHE_GROUND_ITEM, name);
             return;
         }
 
@@ -1537,11 +1575,11 @@ public class ModelGetter
         }
     }
 
-    private void handleAnvilOption(ModelStats[] modelStats, int[] kitRecolours, boolean player, String name)
+    private void handleAnvilOption(ModelStats[] modelStats, int[] kitRecolours, CustomModelType type, String name)
     {
         clientThread.invokeLater(() ->
         {
-            plugin.cacheToAnvil(modelStats, kitRecolours, player);
+            modelUtilities.cacheToAnvil(modelStats, kitRecolours, type);
             plugin.sendChatMessage("Model sent to Anvil: " + name);
         });
     }
@@ -1550,7 +1588,7 @@ public class ModelGetter
     {
         clientThread.invokeLater(() ->
         {
-            Model model = plugin.constructModelFromCache(modelStats, kitRecolours, player, ls, null);
+            Model model = modelUtilities.constructModelFromCache(modelStats, kitRecolours, player, ls, null);
             store(model, modelStats, menuOption, customModelType, name, kitRecolours, ls, orientation, poseAnimation, keyFrame, spkfs);
         });
     }
@@ -1569,7 +1607,7 @@ public class ModelGetter
         CustomLighting lighting = new CustomLighting(ls.getAmbient(), ls.getContrast(), ls.getX(), ls.getY(), ls.getZ());
         CustomModelComp comp = new CustomModelComp(0, customModelType, 7699, modelStats, kitRecolours, null, null, ls, lighting, false, name);
         CustomModel customModel = new CustomModel(model, comp);
-        plugin.addCustomModel(customModel, false);
+        modelUtilities.addCustomModel(customModel, false);
         plugin.sendChatMessage("Model stored: " + name);
         CreatorsPanel creatorsPanel = plugin.getCreatorsPanel();
 
@@ -1617,9 +1655,119 @@ public class ModelGetter
         }
     }
 
+    public void exportModelFromCache(CustomModelType type, int id, String name, boolean all, int modelId)
+    {
+        ModelStats[] modelStats = new ModelStats[0];
+        switch (type)
+        {
+            case CACHE_NPC:
+                modelStats = dataFinder.findModelsForNPC(id);
+                break;
+            case CACHE_OBJECT:
+                modelStats = dataFinder.findModelsForObject(id, 0, LightingStyle.DEFAULT, true);
+                break;
+            case CACHE_GROUND_ITEM:
+            case CACHE_MAN_WEAR:
+            case CACHE_WOMAN_WEAR:
+                modelStats = dataFinder.findModelsForGroundItem(id, type);
+                break;
+            case CACHE_SPOTANIM:
+                modelStats = dataFinder.findSpotAnim(id);
+        }
+
+        if (modelStats == null || modelStats.length == 0)
+        {
+            plugin.sendChatMessage("Could not find this element in the cache.");
+            plugin.sendChatMessage("This may be because Creator's Kit's cache dumps have not yet been updated to the latest game update.");
+            return;
+        }
+
+        if (!all)
+        {
+            for (ModelStats stats : modelStats)
+            {
+                if (stats.getModelId() == modelId)
+                {
+                    modelStats = new ModelStats[]{stats};
+                    break;
+                }
+            }
+        }
+
+        ModelStats[] finalModelStats = modelStats;
+        clientThread.invokeLater(() ->
+        {
+            ModelData modelData = modelUtilities.constructModelDataFromCache(finalModelStats, new int[0], false);
+            Model model = modelData.light();
+
+            int vCount = model.getVerticesCount();
+            int fCount = model.getFaceCount();
+            float[] fvX = Arrays.copyOf(model.getVerticesX(), vCount);
+            float[] fvY = Arrays.copyOf(model.getVerticesY(), vCount);
+            float[] fvZ = Arrays.copyOf(model.getVerticesZ(), vCount);
+
+            int[] vX = new int[vCount];
+            int[] vY = new int[vCount];
+            int[] vZ = new int[vCount];
+
+            for (int i = 0; i < vCount; i++)
+            {
+                vX[i] = (int) fvX[i];
+                vY[i] = (int) fvY[i];
+                vZ[i] = (int) fvZ[i];
+            }
+
+            byte[] renderPriorities;
+            if (model.getFaceRenderPriorities() == null)
+            {
+                renderPriorities = new byte[fCount];
+                Arrays.fill(renderPriorities, (byte) 0);
+            }
+            else
+            {
+                renderPriorities = model.getFaceRenderPriorities();
+            }
+
+            byte[] transparencies;
+            if (model.getFaceTransparencies() == null)
+            {
+                transparencies = new byte[fCount];
+                Arrays.fill(transparencies, (byte) 0);
+            }
+            else
+            {
+                transparencies = model.getFaceTransparencies();
+            }
+
+            BlenderModel bm;
+            if (config.vertexColours())
+            {
+                bm = modelExporter.bmVertexColours(model);
+            }
+            else
+            {
+                bm = modelExporter.bmFaceColours(
+                        finalModelStats,
+                        false,
+                        new int[0],
+                        false,
+                        vX,
+                        vY,
+                        vZ,
+                        model.getFaceIndices1(),
+                        model.getFaceIndices2(),
+                        model.getFaceIndices3(),
+                        transparencies,
+                        renderPriorities);
+            }
+
+            modelExporter.saveToFile(name, bm);
+        });
+    }
+
     private void initiateAnimationExport(int animId, String name, BlenderModel bm, ModelStats[] modelStats, int[] kitRecolours, boolean player, LightingStyle ls, CustomLighting cl)
     {
-        Model model = plugin.constructModelFromCache(modelStats, kitRecolours, player, ls, cl);
+        Model model = modelUtilities.constructModelFromCache(modelStats, kitRecolours, player, ls, cl);
         initiateAnimationExport(animId, name, model, bm);
     }
 
@@ -1681,7 +1829,7 @@ public class ModelGetter
 
         for (int e = 0; e < maxAnimFrames; e++)
         {
-            exportObject.setAnimationFrame(AnimationType.ACTIVE, e, true);
+            exportObject.setAnimationFrame(AnimationType.ACTIVE, e, plugin.getRandom(), false, true);
             Model m = exportObject.getModel();
 
             int[][] verts = animVerts[e];

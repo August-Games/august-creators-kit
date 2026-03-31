@@ -1,6 +1,8 @@
 package com.creatorskit.swing;
 
 import com.creatorskit.CKObject;
+import com.creatorskit.CreatorsConfig;
+import com.creatorskit.programming.AnimationType;
 import com.creatorskit.saves.CharacterSave;
 import com.creatorskit.CreatorsPlugin;
 import com.creatorskit.Character;
@@ -54,6 +56,7 @@ public class CreatorsPanel extends PluginPanel
 {
     private ClientThread clientThread;
     private final Client client;
+    private CreatorsConfig config;
     private final CreatorsPlugin plugin;
     private final ToolBoxFrame toolBox;
     private final ModelAnvil modelAnvil;
@@ -86,10 +89,11 @@ public class CreatorsPanel extends PluginPanel
     private final LineBorder selectedBorder = new LineBorder(Color.WHITE, 1);
 
     @Inject
-    public CreatorsPanel(@Nullable Client client, ClientThread clientThread, CreatorsPlugin plugin, ToolBoxFrame toolBox, DataFinder dataFinder, ModelImporter modelImporter)
+    public CreatorsPanel(@Nullable Client client, CreatorsConfig config, ClientThread clientThread, CreatorsPlugin plugin, ToolBoxFrame toolBox, DataFinder dataFinder, ModelImporter modelImporter)
     {
         this.clientThread = clientThread;
         this.client = client;
+        this.config = config;
         this.plugin = plugin;
         this.toolBox = toolBox;
         this.modelOrganizer = toolBox.getModelOrganizer();
@@ -114,9 +118,12 @@ public class CreatorsPanel extends PluginPanel
         toolBoxButton.setFocusable(false);
         toolBoxButton.addActionListener(e ->
         {
-            toolBox.setVisible(!toolBox.isVisible());
-            revalidate();
-            repaint();
+            SwingUtilities.invokeLater(() ->
+            {
+                toolBox.setVisible(!toolBox.isVisible());
+                revalidate();
+                repaint();
+            });
         });
         add(toolBoxButton, c);
 
@@ -561,15 +568,12 @@ public class CreatorsPanel extends PluginPanel
 
         animationSpinner.addChangeListener(e ->
         {
-            int animationNumber = (int) animationSpinner.getValue();
-            plugin.setAnimation(character, animationNumber);
-            plugin.setAnimationFrame(character, (int) animationFrameSpinner.getValue(), true);
+            character.setAnimation(clientThread, client, plugin.getRandom(), AnimationType.ACTIVE, (int) animationSpinner.getValue(), (int) animationFrameSpinner.getValue(), config.randomizeStartFrame(), true);
         });
 
         animationFrameSpinner.addChangeListener(e ->
         {
-            int animFrame = (int) animationFrameSpinner.getValue();
-            plugin.setAnimationFrame(character, animFrame, true);
+            character.setAnimation(clientThread, client, plugin.getRandom(), AnimationType.ACTIVE, (int) animationSpinner.getValue(), (int) animationFrameSpinner.getValue(), config.randomizeStartFrame(), true);
         });
 
         radiusSpinner.addChangeListener(e ->
@@ -1355,6 +1359,13 @@ public class CreatorsPanel extends PluginPanel
         {
             ModelKeyFrame keyFrame = keyFrames[i];
             CustomModel storedModel = keyFrame.getCustomModel();
+
+            if (storedModel == null)
+            {
+                saves[i] = new ModelKeyFrameSave(keyFrame.getTick(), false, keyFrame.getModelId(), 0, keyFrame.getRadius());
+                continue;
+            }
+
             int compId = 0;
 
             for (int e = 0; e < comps.length; e++)
@@ -1549,6 +1560,7 @@ public class CreatorsPanel extends PluginPanel
 
     private void loadSetup(File file, SetupSave saveFile)
     {
+        ModelUtilities modelUtilities = toolBox.getModelUtilities();
         updateLoadedFile(file);
         CustomModelComp[] comps = saveFile.getComps();
         FolderNodeSave folderNodeSave = saveFile.getMasterFolderNode();
@@ -1569,17 +1581,17 @@ public class CreatorsPanel extends PluginPanel
             switch (comp.getType())
             {
                 case FORGED:
-                    model = plugin.createComplexModel(comp.getDetailedModels(), comp.isPriority(), comp.getLightingStyle(), comp.getCustomLighting(), false);
+                    model = modelUtilities.createComplexModel(comp.getDetailedModels(), comp.isPriority(), comp.getLightingStyle(), comp.getCustomLighting(), false);
                     customModel = new CustomModel(model, comp);
                     break;
                 case CACHE_NPC:
                     modelStats = comp.getModelStats();
-                    model = plugin.constructModelFromCache(modelStats, new int[0], false, LightingStyle.ACTOR, null);
+                    model = modelUtilities.constructModelFromCache(modelStats, new int[0], false, LightingStyle.ACTOR, null);
                     customModel = new CustomModel(model, comp);
                     break;
                 case CACHE_PLAYER:
                     modelStats = comp.getModelStats();
-                    model = plugin.constructModelFromCache(modelStats, comp.getKitRecolours(), true, LightingStyle.ACTOR, null);
+                    model = modelUtilities.constructModelFromCache(modelStats, comp.getKitRecolours(), true, LightingStyle.ACTOR, null);
                     customModel = new CustomModel(model, comp);
                     break;
                 default:
@@ -1589,7 +1601,7 @@ public class CreatorsPanel extends PluginPanel
                 case CACHE_MAN_WEAR:
                 case CACHE_WOMAN_WEAR:
                     modelStats = comp.getModelStats();
-                    model = plugin.constructModelFromCache(modelStats, null, false, LightingStyle.DEFAULT, null);
+                    model = modelUtilities.constructModelFromCache(modelStats, null, false, LightingStyle.DEFAULT, null);
                     customModel = new CustomModel(model, comp);
                     break;
                 case BLENDER:
@@ -1597,7 +1609,7 @@ public class CreatorsPanel extends PluginPanel
                     customModel = new CustomModel(model, comp);
             }
 
-            plugin.addCustomModel(customModel, false);
+            modelUtilities.addCustomModel(customModel, false);
             customModels[i] = customModel;
         }
 
@@ -1654,7 +1666,7 @@ public class CreatorsPanel extends PluginPanel
                                 animFrame,
                                 save.getRadius(),
                                 frames,
-                                save.getSummary(),
+                                new KeyFrameType[]{KeyFrameType.MOVEMENT, KeyFrameType.ANIMATION, KeyFrameType.ORIENTATION},
                                 new Color(save.getRgb()),
                                 save.isActive(),
                                 save.getNonInstancedPoint(),
@@ -1871,7 +1883,7 @@ public class CreatorsPanel extends PluginPanel
         if (option == JFileChooser.APPROVE_OPTION)
         {
             File selectedFile = fileChooser.getSelectedFile();
-            plugin.loadCustomModel(selectedFile);
+            toolBox.getModelUtilities().loadCustomModel(selectedFile);
         }
     }
 

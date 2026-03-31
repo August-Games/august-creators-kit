@@ -25,10 +25,13 @@ import java.util.Collection;
 public class Programmer
 {
     private final Client client;
+    private final CreatorsConfig config;
     private final ClientThread clientThread;
     private final CreatorsPlugin plugin;
     private final TimeSheetPanel timeSheetPanel;
     private final DataFinder dataFinder;
+    private final ModelUtilities modelUtilities;
+
     private int clientTickAtLastProgramTick = 0;
     private final int GOLDEN_CHIN = 29757;
     private final int TILE_LENGTH = 128;
@@ -40,13 +43,15 @@ public class Programmer
     private boolean triggerPause = false;
 
     @Inject
-    public Programmer(Client client, ClientThread clientThread, CreatorsPlugin plugin, TimeSheetPanel timeSheetPanel, DataFinder dataFinder)
+    public Programmer(Client client, CreatorsConfig config, ClientThread clientThread, CreatorsPlugin plugin, TimeSheetPanel timeSheetPanel, DataFinder dataFinder, ModelUtilities modelUtilities)
     {
         this.client = client;
+        this.config = config;
         this.clientThread = clientThread;
         this.plugin = plugin;
         this.timeSheetPanel = timeSheetPanel;
         this.dataFinder = dataFinder;
+        this.modelUtilities = modelUtilities;
     }
 
     @Subscribe
@@ -585,24 +590,30 @@ public class Programmer
         if (kf == null)
         {
             int animId = (int) character.getAnimationSpinner().getValue();
+            int animFrame = (int) character.getAnimationFrameSpinner().getValue();
             Animation animation = ckObject.getAnimations()[0];
             if (animation == null || animation.getId() != animId)
             {
-                plugin.setAnimation(character, animId);
+                character.setAnimation(clientThread, client, plugin.getRandom(), AnimationType.ACTIVE, animId, animFrame, config.randomizeStartFrame(), true);
             }
             return;
         }
 
         AnimationKeyFrame keyFrame = (AnimationKeyFrame) kf;
-        int active = keyFrame.getActive();
+        boolean randomizeStartFrame = false;
         int pose = getPoseAnimation(keyFrame, isMoving, orientationDifference, speed);
         int poseStartFrame = 0;
         if (pose == keyFrame.getIdle() || pose == keyFrame.getWalk() || pose == keyFrame.getRun())
         {
             poseStartFrame = keyFrame.getStartFrame();
+            if (config.randomizeStartFrame())
+            {
+                randomizeStartFrame = true;
+            }
         }
 
         int finalPoseStartFrame = poseStartFrame;
+        boolean finalRandomizeStartFrame = randomizeStartFrame;
         clientThread.invoke(() ->
         {
             Animation currentPose = ckObject.getAnimations()[1];
@@ -620,12 +631,12 @@ public class Programmer
                 if (currentPose == null || currentPose.getId() != pose)
                 {
                     ckObject.setAnimation(AnimationType.POSE, pose);
-                    ckObject.setAnimationFrame(AnimationType.POSE, finalPoseStartFrame, false);
+                    ckObject.setAnimationFrame(AnimationType.POSE, finalPoseStartFrame, plugin.getRandom(), finalRandomizeStartFrame, false);
                 }
 
                 if (!playing)
                 {
-                    setPoseAnimationFrame(ckObject, timeSheetPanel.getCurrentTime(), keyFrame.getTick(), finalPoseStartFrame);
+                    setPoseAnimationFrame(ckObject, timeSheetPanel.getCurrentTime(), keyFrame.getTick(), finalRandomizeStartFrame, finalPoseStartFrame);
                 }
             }
         });
@@ -1157,7 +1168,7 @@ public class Programmer
             for (KeyFrameType hitsplatType : KeyFrameType.HITSPLAT_TYPES)
             {
                 KeyFrame currentHitsplat = currentFrames[KeyFrameType.getIndex(hitsplatType)];
-                double lastHitsplatTick = 0;
+                double lastHitsplatTick = Integer.MIN_VALUE;
                 if (currentHitsplat != null)
                 {
                     lastHitsplatTick = currentHitsplat.getTick();
@@ -1351,16 +1362,17 @@ public class Programmer
         {
             ckObject.setHasAnimKeyFrame(false);
             int animId = (int) character.getAnimationSpinner().getValue();
+            int animFrame = (int) character.getAnimationFrameSpinner().getValue();
             Animation current = ckObject.getAnimations()[0];
             if (current == null)
             {
-                plugin.setAnimation(character, animId);
+                character.setAnimation(clientThread, client, plugin.getRandom(), AnimationType.ACTIVE, animId, animFrame, config.randomizeStartFrame(), true);
                 return;
             }
 
             if (current.getId() != animId)
             {
-                plugin.setAnimation(character, animId);
+                character.setAnimation(clientThread, client, plugin.getRandom(), AnimationType.ACTIVE, animId, animFrame, config.randomizeStartFrame(), true);
             }
 
             return;
@@ -1509,7 +1521,7 @@ public class Programmer
                     ms.setTranslateZ(height);
                 }
 
-                Model model = plugin.constructModelFromCache(stats, new int[0], false, LightingStyle.CUSTOM, cl);
+                Model model = modelUtilities.constructModelFromCache(stats, new int[0], false, LightingStyle.CUSTOM, cl);
 
                 ckObject.setModel(model);
                 setActiveAnimationFrame(ckObject, data.getAnimationId(), currentTime, startTick, 0, loop, false, true);
@@ -1576,7 +1588,7 @@ public class Programmer
         else
         {
             ckObject.setAnimation(AnimationType.ACTIVE, animation);
-            ckObject.setAnimationFrame(AnimationType.ACTIVE, frame, freeze);
+            ckObject.setAnimationFrame(AnimationType.ACTIVE, frame, plugin.getRandom(), false, freeze);
             ckObject.tick(tick);
             ckObject.setLoop(loop);
             ckObject.setFinished(false);
@@ -1584,7 +1596,7 @@ public class Programmer
         }
     }
 
-    public void setPoseAnimationFrame(CKObject ckObject, double currentTime, double startTime, int startFrame)
+    public void setPoseAnimationFrame(CKObject ckObject, double currentTime, double startTime, boolean randomizeStartFrame, int startFrame)
     {
         Animation[] animations = ckObject.getAnimations();
 
@@ -1596,7 +1608,7 @@ public class Programmer
             {
                 clientThread.invoke(() ->
                 {
-                    ckObject.setAnimationFrame(AnimationType.POSE, animFrame[0], false);
+                    ckObject.setAnimationFrame(AnimationType.POSE, animFrame[0], plugin.getRandom(), randomizeStartFrame, false);
                     ckObject.tick(animFrame[1]);
                 });
             }

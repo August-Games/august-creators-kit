@@ -943,14 +943,14 @@ public class AttributePanel extends JPanel
                 "Player",
                 new int[0],
                 1,
-                808,
-                819,
-                824,
-                823,
-                823,
-                820,
-                821,
-                822,
+                WeaponAnimData.IDLE_UNARMED,
+                WeaponAnimData.WALK_UNARMED,
+                WeaponAnimData.RUN_UNARMED,
+                WeaponAnimData.IDLE_ROTATE_LEFT_UNARMED,
+                WeaponAnimData.IDLE_ROTATE_RIGHT_UNARMED,
+                WeaponAnimData.ROTATE_180,
+                WeaponAnimData.ROTATE_LEFT,
+                WeaponAnimData.ROTATE_RIGHT,
                 1,
                 1,
                 new int[0],
@@ -1596,6 +1596,7 @@ public class AttributePanel extends JPanel
         toggleSkull.addItem(OverheadSprite.NONE);
         toggleSkull.addItem(OverheadSprite.SKULL);
         toggleSkull.addItem(OverheadSprite.SKULL_HIGH_RISK);
+        toggleSkull.addItem(OverheadSprite.SKULL_FIGHT_PITS);
         toggleSkull.addItem(OverheadSprite.SKULL_BH_1);
         toggleSkull.addItem(OverheadSprite.SKULL_BH_2);
         toggleSkull.addItem(OverheadSprite.SKULL_BH_3);

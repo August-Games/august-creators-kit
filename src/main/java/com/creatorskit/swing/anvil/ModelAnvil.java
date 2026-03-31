@@ -4,10 +4,12 @@ import com.creatorskit.CreatorsPlugin;
 import com.creatorskit.models.*;
 import com.creatorskit.swing.StringHandler;
 import com.creatorskit.swing.colours.ColourSwapPanel;
+import com.creatorskit.swing.renderer.RenderPanel;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.Model;
+import net.runelite.api.ModelData;
 import net.runelite.client.RuneLite;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.ui.ColorScheme;
@@ -18,6 +20,7 @@ import org.apache.commons.lang3.ArrayUtils;
 
 import javax.inject.Inject;
 import javax.swing.*;
+import javax.swing.border.EmptyBorder;
 import javax.swing.border.LineBorder;
 import java.awt.*;
 import java.awt.event.*;
@@ -31,6 +34,13 @@ public class ModelAnvil extends JPanel
     private ClientThread clientThread;
     private final Client client;
     private final CreatorsPlugin plugin;
+    private final ModelUtilities modelUtilities;
+
+    private final JPanel rightPanel = new JPanel();
+    private final JPanel leftPanel = new JPanel();
+    private final JPanel lightPanel = new JPanel();
+    private RenderPanel renderPanel;
+
     private final BufferedImage DUPLICATE = ImageUtil.loadImageResource(getClass(), "/Duplicate.png");
     private final BufferedImage CLOSE = ImageUtil.loadImageResource(getClass(), "/Close.png");
     private final BufferedImage ARROW_LEFT = ImageUtil.loadImageResource(getClass(), "/Arrow_Left.png");
@@ -64,43 +74,39 @@ public class ModelAnvil extends JPanel
     private final JCheckBox priorityCheckBox = new JCheckBox("Priority");
     @Getter
     private final JTextField nameField = new JTextField();
-    private final ColourSwapPanel colourSwapPanel;
+    private ColourSwapPanel colourSwapPanel;
     private final GridBagConstraints c = new GridBagConstraints();
     private final int COMPLEX_GRID_COLUMNS = 3;
 
     @Inject
-    public ModelAnvil(Client client, ClientThread clientThread, CreatorsPlugin plugin)
+    public ModelAnvil(Client client, ClientThread clientThread, CreatorsPlugin plugin, ModelUtilities modelUtilities)
     {
         this.client = client;
         this.clientThread = clientThread;
         this.plugin = plugin;
+        this.modelUtilities = modelUtilities;
 
+        setupLightPanel();
+        setupRightPanel();
+        setupLeftPanel();
+        setupLayout();
+    }
+
+    private void setupLayout()
+    {
         setBackground(ColorScheme.DARK_GRAY_COLOR);
-        setLayout(new GridBagLayout());
+        setLayout(new BorderLayout(4, 4));
 
-        c.fill = GridBagConstraints.BOTH;
-        c.insets = new Insets(4, 4, 4, 4);
+        add(rightPanel, BorderLayout.EAST);
+        add(leftPanel, BorderLayout.CENTER);
+        revalidate();
+    }
 
-        c.weightx = 1;
-        c.weighty = 0;
-        c.gridx = 0;
-        c.gridy = 0;
-        JLabel modelForgeLabel = new JLabel("Model Anvil");
-        modelForgeLabel.setFont(FontManager.getRunescapeBoldFont());
-        modelForgeLabel.setHorizontalAlignment(SwingConstants.CENTER);
-        modelForgeLabel.setVerticalAlignment(SwingConstants.CENTER);
-        add(modelForgeLabel, c);
-
-        c.gridx = 0;
-        c.gridy = 1;
-        c.weightx = 0;
-        c.weighty = 0;
-        c.ipady = 10;
-        JPanel buttonsPanel = new JPanel();
-        buttonsPanel.setLayout(new GridLayout(1, 0, 10, 0));
-        add(buttonsPanel, c);
-
+    public void setupRightPanel()
+    {
         nameField.setText("Name");
+        nameField.setFont(FontManager.getRunescapeBoldFont());
+        nameField.setForeground(ColorScheme.BRAND_ORANGE);
         nameField.setHorizontalAlignment(JTextField.CENTER);
         nameField.addActionListener(e -> nameField.setText(StringHandler.cleanString(nameField.getText())));
         nameField.addFocusListener(new FocusListener() {
@@ -113,131 +119,58 @@ public class ModelAnvil extends JPanel
                 nameField.setText(StringHandler.cleanString(nameField.getText()));
             }
         });
-        buttonsPanel.add(nameField);
 
         JButton forgeButton = new JButton("Forge");
-        buttonsPanel.add(forgeButton);
+        forgeButton.addActionListener(e -> onForgeButtonPressed(client, nameField, false));
 
         JButton forgeSetButton = new JButton("Forge & Set");
+        forgeSetButton.addActionListener(e -> onForgeButtonPressed(client, nameField, true));
+
+        JPanel previewPanel = new JPanel();
+        previewPanel.setLayout(new BorderLayout());
+        previewPanel.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+        previewPanel.setBorder(new LineBorder(ColorScheme.MEDIUM_GRAY_COLOR, 1));
+
+        JSlider fovSlider = new JSlider(1, 179, RenderPanel.FOV_DEFAULT);
+        previewPanel.add(fovSlider, BorderLayout.NORTH);
+
+        renderPanel = new RenderPanel(client, clientThread, fovSlider);
+        previewPanel.add(renderPanel, BorderLayout.CENTER);
+
+        JButton resetButton = new JButton("Reset Camera View");
+        resetButton.setBackground(ColorScheme.DARK_GRAY_COLOR);
+        resetButton.addActionListener(e -> renderPanel.resetCameraView());
+        previewPanel.add(resetButton, BorderLayout.SOUTH);
+
+        rightPanel.setLayout(new BorderLayout(4, 4));
+        rightPanel.setBorder(new EmptyBorder(2, 2, 2, 2));
+
+        JPanel settingsPanel = new JPanel();
+        settingsPanel.setLayout(new BorderLayout(4, 4));
+
+        JPanel lightsButtonsPanel = new JPanel();
+        lightsButtonsPanel.setLayout(new GridLayout(0, 2, 4, 4));
+
+        JPanel buttonsPanel = new JPanel();
+        buttonsPanel.setLayout(new GridLayout(0, 1, 4, 4));
+
+        buttonsPanel.add(forgeButton);
         buttonsPanel.add(forgeSetButton);
 
-        c.gridx = 0;
-        c.gridy = 2;
-        c.weightx = 1;
-        c.weighty = 1;
-        c.ipady = 0;
-        tabbedPane.setBorder(new LineBorder(ColorScheme.LIGHT_GRAY_COLOR, 1));
-        add(tabbedPane, c);
+        lightsButtonsPanel.add(lightPanel);
+        lightsButtonsPanel.add(buttonsPanel);
 
-        JPanel viewport = new JPanel();
-        viewport.setLayout(new GridBagLayout());
-        viewport.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+        settingsPanel.add(nameField, BorderLayout.NORTH);
+        settingsPanel.add(lightsButtonsPanel, BorderLayout.CENTER);
 
-        scrollPane.setBackground(ColorScheme.DARK_GRAY_COLOR);
-        scrollPane.setViewportView(viewport);
-        scrollPane.setViewportBorder(new LineBorder(ColorScheme.DARKER_GRAY_COLOR, 8));
-        tabbedPane.addTab("Model Anvil", scrollPane);
+        rightPanel.add(settingsPanel, BorderLayout.NORTH);
+        rightPanel.add(previewPanel, BorderLayout.CENTER);
+    }
 
-        c.insets = new Insets(0, 0, 0, 0);
-        c.weightx = 1;
-        c.weighty = 0;
-        c.gridx = 0;
-        c.gridy = 0;
-        complexMode.setLayout(new GridLayout(0, COMPLEX_GRID_COLUMNS, 8, 8));
-        complexMode.setBackground(ColorScheme.DARKER_GRAY_COLOR);
-        viewport.add(complexMode, c);
-
-        c.gridx = 0;
-        c.gridy = 1;
-        c.weightx = 1;
-        c.weighty = 1;
-        JLabel emptyLabel = new JLabel("");
-        viewport.add(emptyLabel, c);
-
-        colourSwapPanel = new ColourSwapPanel(client, clientThread, complexPanels);
-        tabbedPane.addTab("Colour/Texture Swapper", colourSwapPanel);
-
-        JPanel headerPanel = new JPanel();
-        headerPanel.setBackground(ColorScheme.DARK_GRAY_COLOR);
-        scrollPane.setColumnHeaderView(headerPanel);
-
-        JButton addButton = new JButton("Add");
-        addButton.addActionListener(e -> createComplexPanel());
-        headerPanel.add(addButton);
-
-        JButton clearButton = new JButton("Clear");
-        clearButton.addActionListener(e ->
-        {
-            for (JPanel complexModePanel : complexPanels)
-            {
-                complexMode.remove(complexModePanel);
-                colourSwapPanel.removeAllComplexPanelOptions();
-            }
-
-            repaint();
-            revalidate();
-            complexPanels.clear();
-        });
-        headerPanel.add(clearButton);
-
-        JPopupMenu loadPopupMenu = new JPopupMenu();
-        JMenuItem menuItem = new JMenuItem("Load");
-        menuItem.addActionListener(e -> LinkBrowser.open(MODELS_DIR.toString()));
-        loadPopupMenu.add(menuItem);
-
-        JButton loadButton = new JButton("Load");
-        loadButton.addActionListener(e -> openLoadDialog());
-        loadButton.setComponentPopupMenu(loadPopupMenu);
-        headerPanel.add(loadButton);
-
-        JButton saveButton = new JButton("Save");
-
-        headerPanel.add(saveButton);
-
-        priorityCheckBox.setToolTipText("Use an oversimplified method of resolving render order issues (can be useful when merging many models)");
-        priorityCheckBox.setFocusable(false);
-        headerPanel.add(priorityCheckBox);
-
-        JPanel sidePanel = new JPanel();
-        sidePanel.setLayout(new GridBagLayout());
-        scrollPane.setRowHeaderView(sidePanel);
-
-        JPanel lightPanel = new JPanel();
+    private void setupLightPanel()
+    {
         lightPanel.setLayout(new GridBagLayout());
         lightPanel.setBorder(new LineBorder(ColorScheme.DARKER_GRAY_COLOR, 1));
-
-        lightingSpinners[0] = ambSpinner;
-        lightingSpinners[1] = conSpinner;
-        lightingSpinners[2] = lightXSpinner;
-        lightingSpinners[3] = lightYSpinner;
-        lightingSpinners[4] = lightZSpinner;
-
-        ambSpinner.setToolTipText("<html>Set the ambient lighting level<br>Range: -1000 to 1000</html>");
-        conSpinner.setToolTipText("<html>Set the lighting contrast (higher is lower)<br>Range: 100 to 9999</html>");
-        lightXSpinner.setToolTipText("<html>Set the sun's x coordinate relative to the player<br>Range: -1000 to 1000</html>");
-        lightYSpinner.setToolTipText("<html>Set the sun's y coordinate relative to the player<br>Range: -1000 to 1000</html>");
-        lightZSpinner.setToolTipText("<html>Set the sun's z coordinate relative to the player<br>Range: -1000 to 1000</html>");
-
-        presetComboBox.addItem(LightingStyle.DEFAULT);
-        presetComboBox.addItem(LightingStyle.ACTOR);
-        presetComboBox.addItem(LightingStyle.SPOTANIM);
-        presetComboBox.addItem(LightingStyle.DYNAMIC);
-        presetComboBox.addItem(LightingStyle.NONE);
-        presetComboBox.setFocusable(false);
-        presetComboBox.setToolTipText("Quick lighting presets for common cases. Actor = NPCs/Players, SpotAnim = Spells/Effects");
-
-        presetComboBox.addItemListener(e ->
-        {
-            LightingStyle preset = (LightingStyle) presetComboBox.getSelectedItem();
-            if (preset == null)
-                return;
-
-            lightingSpinners[0].setValue(preset.getAmbient());
-            lightingSpinners[1].setValue(preset.getContrast());
-            lightingSpinners[2].setValue(preset.getX());
-            lightingSpinners[3].setValue(preset.getY());
-            lightingSpinners[4].setValue(preset.getZ());
-        });
 
         c.weightx = 1;
         c.weighty = 0;
@@ -305,25 +238,139 @@ public class ModelAnvil extends JPanel
         lightZSpinner.setPreferredSize(LIGHT_DIMENSION);
         lightPanel.add(lightZSpinner, c);
 
-        JPanel groupPanel = new GroupPanel(client, plugin, clientThread);
+        lightingSpinners[0] = ambSpinner;
+        lightingSpinners[1] = conSpinner;
+        lightingSpinners[2] = lightXSpinner;
+        lightingSpinners[3] = lightYSpinner;
+        lightingSpinners[4] = lightZSpinner;
 
-        c.insets = new Insets(8, 8, 8, 8);
+        ambSpinner.setToolTipText("<html>Set the ambient lighting level<br>Range: -1000 to 1000</html>");
+        conSpinner.setToolTipText("<html>Set the lighting contrast (higher is lower)<br>Range: 100 to 9999</html>");
+        lightXSpinner.setToolTipText("<html>Set the sun's x coordinate relative to the player<br>Range: -1000 to 1000</html>");
+        lightYSpinner.setToolTipText("<html>Set the sun's y coordinate relative to the player<br>Range: -1000 to 1000</html>");
+        lightZSpinner.setToolTipText("<html>Set the sun's z coordinate relative to the player<br>Range: -1000 to 1000</html>");
 
+        for (JSpinner spinner : lightingSpinners)
+        {
+            spinner.addChangeListener(e -> updateRenderPanel());
+        }
+
+        presetComboBox.addItem(LightingStyle.DEFAULT);
+        presetComboBox.addItem(LightingStyle.ACTOR);
+        presetComboBox.addItem(LightingStyle.SPOTANIM);
+        presetComboBox.addItem(LightingStyle.DYNAMIC);
+        presetComboBox.addItem(LightingStyle.NONE);
+        presetComboBox.setFocusable(false);
+        presetComboBox.setToolTipText("Quick lighting presets for common cases. Actor = NPCs/Players, SpotAnim = Spells/Effects");
+
+        presetComboBox.addItemListener(e ->
+        {
+            LightingStyle preset = (LightingStyle) presetComboBox.getSelectedItem();
+            if (preset == null)
+                return;
+
+            lightingSpinners[0].setValue(preset.getAmbient());
+            lightingSpinners[1].setValue(preset.getContrast());
+            lightingSpinners[2].setValue(preset.getX());
+            lightingSpinners[3].setValue(preset.getY());
+            lightingSpinners[4].setValue(preset.getZ());
+        });
+    }
+
+    private void setupLeftPanel()
+    {
+        leftPanel.setLayout(new BorderLayout());
+        leftPanel.add(tabbedPane, BorderLayout.CENTER);
+
+        JPanel anvilPanel = new JPanel();
+        anvilPanel.setBorder(new LineBorder(ColorScheme.DARKER_GRAY_COLOR, 4));
+        anvilPanel.setLayout(new BorderLayout(4, 4));
+
+        JPanel viewport = new JPanel();
+        viewport.setLayout(new GridBagLayout());
+        viewport.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+
+        scrollPane.setBackground(ColorScheme.DARK_GRAY_COLOR);
+        scrollPane.setViewportView(viewport);
+        scrollPane.setViewportBorder(new LineBorder(ColorScheme.DARKER_GRAY_COLOR, 8));
+
+        JScrollPane groupScrollPane = new JScrollPane();
+        groupScrollPane.setBackground(ColorScheme.DARK_GRAY_COLOR);
+        groupScrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+
+        JPanel groupPanel = new GroupPanel(plugin, clientThread);
+        groupScrollPane.setViewportView(groupPanel);
+
+        anvilPanel.add(scrollPane, BorderLayout.CENTER);
+        anvilPanel.add(groupScrollPane, BorderLayout.WEST);
+        tabbedPane.addTab("Model Anvil", anvilPanel);
+
+        c.fill = GridBagConstraints.BOTH;
+        c.insets = new Insets(0, 0, 0, 0);
+        c.weightx = 1;
+        c.weighty = 0;
         c.gridx = 0;
         c.gridy = 0;
-        sidePanel.add(lightPanel, c);
+        complexMode.setLayout(new GridLayout(0, COMPLEX_GRID_COLUMNS, 8, 8));
+        complexMode.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+        viewport.add(complexMode, c);
 
         c.gridx = 0;
         c.gridy = 1;
-        sidePanel.add(groupPanel, c);
-
-        c.gridx = 0;
-        c.gridy = 2;
+        c.weightx = 1;
         c.weighty = 1;
-        sidePanel.add(new JLabel(""), c);
+        JLabel emptyLabel = new JLabel("");
+        viewport.add(emptyLabel, c);
 
-        forgeButton.addActionListener(e -> onForgeButtonPressed(client, nameField, false));
-        forgeSetButton.addActionListener(e -> onForgeButtonPressed(client, nameField, true));
+        colourSwapPanel = new ColourSwapPanel(client, clientThread, complexPanels, this);
+        tabbedPane.addTab("Colour/Texture Swapper", colourSwapPanel);
+
+        JPanel headerPanel = new JPanel();
+        headerPanel.setBackground(ColorScheme.DARK_GRAY_COLOR);
+        scrollPane.setColumnHeaderView(headerPanel);
+
+        JButton addButton = new JButton("Add");
+        addButton.addActionListener(e -> createComplexPanel());
+        headerPanel.add(addButton);
+
+        JButton clearButton = new JButton("Clear");
+        clearButton.addActionListener(e ->
+        {
+            for (JPanel complexModePanel : complexPanels)
+            {
+                complexMode.remove(complexModePanel);
+                colourSwapPanel.removeAllComplexPanelOptions();
+            }
+
+            repaint();
+            revalidate();
+            complexPanels.clear();
+            updateRenderPanel();
+        });
+        headerPanel.add(clearButton);
+
+        JPopupMenu loadPopupMenu = new JPopupMenu();
+        JMenuItem menuItem = new JMenuItem("Load");
+        menuItem.addActionListener(e -> LinkBrowser.open(MODELS_DIR.toString()));
+        loadPopupMenu.add(menuItem);
+
+        JButton loadButton = new JButton("Load");
+        loadButton.addActionListener(e -> openLoadDialog());
+        loadButton.setComponentPopupMenu(loadPopupMenu);
+        headerPanel.add(loadButton);
+
+        JButton saveButton = new JButton("Save");
+
+        headerPanel.add(saveButton);
+
+        priorityCheckBox.setToolTipText("Use an oversimplified method of resolving render order issues (can be useful when merging many models)");
+        priorityCheckBox.setFocusable(false);
+        headerPanel.add(priorityCheckBox);
+
+        JButton autoNameButton = new JButton("Generate Names");
+        autoNameButton.setToolTipText("Automatically generates names for entered models");
+        autoNameButton.addActionListener(e -> generateNames());
+        headerPanel.add(autoNameButton);
 
         saveButton.addActionListener(e ->
         {
@@ -336,8 +383,35 @@ public class ModelAnvil extends JPanel
 
             openSaveDialog(nameField.getText(), priorityCheckBox.isSelected(), LightingStyle.CUSTOM, lighting);
         });
+    }
 
-        revalidate();
+    public void updateRenderPanel()
+    {
+        if (client == null || complexPanels.isEmpty())
+        {
+            renderPanel.resetViewer();
+            return;
+        }
+
+        DetailedModel[] detailedModels = panelsToDetailedModels();
+        if (detailedModels.length == 0)
+        {
+            renderPanel.resetViewer();
+            return;
+        }
+
+        clientThread.invokeLater(() ->
+        {
+            ModelData md = modelUtilities.createComplexModelData(detailedModels);
+            if (md == null)
+            {
+                renderPanel.resetViewer();
+            }
+            else
+            {
+                renderPanel.updateModel(md, getLightingSettings());
+            }
+        });
     }
 
     public void createComplexPanel()
@@ -545,6 +619,7 @@ public class ModelAnvil extends JPanel
             if (colourSwapPanel.getComboBox().getSelectedItem() == complexModePanel)
                 colourSwapPanel.onSwapperPressed(complexModePanel);
         });
+        modelIdSpinner.addChangeListener(e -> updateRenderPanel());
         complexModePanel.add(modelIdSpinner, c);
 
         c.gridwidth = 2;
@@ -621,14 +696,17 @@ public class ModelAnvil extends JPanel
         xTileSpinner.setValue(xTile);
         xTileSpinner.setToolTipText("E/W");
         xTileSpinner.setPreferredSize(SPINNER_DIMENSION);
+        xTileSpinner.addChangeListener(e -> updateRenderPanel());
         tilePanel.add(xTileSpinner);
 
         yTileSpinner.setValue(yTile);
         yTileSpinner.setToolTipText("N/S");
+        yTileSpinner.addChangeListener(e -> updateRenderPanel());
         tilePanel.add(yTileSpinner);
 
         zTileSpinner.setValue(zTile);
         zTileSpinner.setToolTipText("U/D");
+        zTileSpinner.addChangeListener(e -> updateRenderPanel());
         tilePanel.add(zTileSpinner);
 
         c.gridx = 4;
@@ -641,14 +719,17 @@ public class ModelAnvil extends JPanel
         xSpinner.setValue(xTranslate);
         xSpinner.setToolTipText("E/W");
         xSpinner.setPreferredSize(SPINNER_DIMENSION);
+        xSpinner.addChangeListener(e -> updateRenderPanel());
         translatePanel.add(xSpinner);
 
         ySpinner.setValue(yTranslate);
         ySpinner.setToolTipText("N/S");
+        ySpinner.addChangeListener(e -> updateRenderPanel());
         translatePanel.add(ySpinner);
 
         zSpinner.setValue(zTranslate);
         zSpinner.setToolTipText("U/D");
+        zSpinner.addChangeListener(e -> updateRenderPanel());
         translatePanel.add(zSpinner);
 
         c.gridx = 6;
@@ -661,14 +742,17 @@ public class ModelAnvil extends JPanel
         xScaleSpinner.setValue(scaleX);
         xScaleSpinner.setPreferredSize(SPINNER_DIMENSION);
         xScaleSpinner.setToolTipText("E/W");
+        xScaleSpinner.addChangeListener(e -> updateRenderPanel());
         scalePanel.add(xScaleSpinner);
 
         yScaleSpinner.setValue(scaleY);
         yScaleSpinner.setToolTipText("N/S");
+        yScaleSpinner.addChangeListener(e -> updateRenderPanel());
         scalePanel.add(yScaleSpinner);
 
         zScaleSpinner.setValue(scaleZ);
         zScaleSpinner.setToolTipText("U/D");
+        zScaleSpinner.addChangeListener(e -> updateRenderPanel());
         scalePanel.add(zScaleSpinner);
 
         c.gridx = 8;
@@ -700,6 +784,7 @@ public class ModelAnvil extends JPanel
                 check180.setSelected(false);
                 check270.setSelected(false);
             }
+            updateRenderPanel();
         });
 
         check180.addItemListener(e -> {
@@ -708,6 +793,7 @@ public class ModelAnvil extends JPanel
                 check90.setSelected(false);
                 check270.setSelected(false);
             }
+            updateRenderPanel();
         });
 
         check270.addItemListener(e -> {
@@ -716,6 +802,7 @@ public class ModelAnvil extends JPanel
                 check180.setSelected(false);
                 check90.setSelected(false);
             }
+            updateRenderPanel();
         });
 
         switch (rotate)
@@ -783,6 +870,7 @@ public class ModelAnvil extends JPanel
         checkInvertFaces.setSelected(invertFaces);
         checkInvertFaces.setHorizontalAlignment(SwingConstants.LEFT);
         checkInvertFaces.setFocusable(false);
+        checkInvertFaces.addChangeListener(e -> updateRenderPanel());
         complexModePanel.add(checkInvertFaces, c);
 
         duplicateButton.addActionListener(e ->
@@ -824,6 +912,8 @@ public class ModelAnvil extends JPanel
                     complexModePanel.getTexturesFrom(),
                     complexModePanel.getTexturesTo(),
                     checkInvertFaces.isSelected());
+
+            updateRenderPanel();
         });
 
         removeButton.addActionListener(e ->
@@ -831,6 +921,7 @@ public class ModelAnvil extends JPanel
             colourSwapPanel.removeComplexPanelOption(complexModePanel);
             complexMode.remove(complexModePanel);
             complexPanels.remove(complexModePanel);
+            updateRenderPanel();
             repaint();
             revalidate();
         });
@@ -901,17 +992,21 @@ public class ModelAnvil extends JPanel
 
     private void onForgeButtonPressed(Client client, JTextField nameField, boolean forgeAndSet)
     {
-        CustomLighting lighting = new CustomLighting(
+        CustomLighting lighting = getLightingSettings();
+        if (lighting.getX() == 0 && lighting.getY() == 0 && lighting.getZ() == 0)
+            lighting.setZ(1);
+
+        forgeModel(client, nameField, priorityCheckBox.isSelected(), lighting, forgeAndSet);
+    }
+
+    private CustomLighting getLightingSettings()
+    {
+        return new CustomLighting(
                 (int) lightingSpinners[0].getValue(),
                 (int) lightingSpinners[1].getValue(),
                 (int) lightingSpinners[2].getValue(),
                 (int) lightingSpinners[3].getValue(),
                 (int) lightingSpinners[4].getValue());
-
-        if (lighting.getX() == 0 && lighting.getY() == 0 && lighting.getZ() == 0)
-            lighting.setZ(1);
-
-        forgeModel(client, nameField, priorityCheckBox.isSelected(), lighting, forgeAndSet);
     }
 
     private void forgeModel(Client client, JTextField nameField, boolean setPriority, CustomLighting lighting, boolean forgeAndSet)
@@ -935,13 +1030,13 @@ public class ModelAnvil extends JPanel
 
             CustomModelComp comp = new CustomModelComp(plugin.getStoredModels().size(), CustomModelType.FORGED, -1, null, null, detailedModels, null, LightingStyle.CUSTOM, lighting, setPriority, nameField.getText());
             CustomModel customModel = new CustomModel(model, comp);
-            plugin.addCustomModel(customModel, forgeAndSet);
+            modelUtilities.addCustomModel(customModel, forgeAndSet);
         });
     }
 
     public Model forgeComplexModel(boolean setPriority, DetailedModel[] detailedModels, LightingStyle lightingStyle, CustomLighting lighting)
     {
-        return plugin.createComplexModel(detailedModels, setPriority, lightingStyle, lighting, true);
+        return modelUtilities.createComplexModel(detailedModels, setPriority, lightingStyle, lighting, true);
     }
 
     private DetailedModel[] panelsToDetailedModels()
@@ -1096,7 +1191,23 @@ public class ModelAnvil extends JPanel
                 }
             }
 
-            plugin.loadCustomModelToAnvil(selectedFile);
+            modelUtilities.loadCustomModelToAnvil(selectedFile);
+        }
+    }
+
+    public void generateNames()
+    {
+        DataFinder dataFinder = plugin.getDataFinder();
+        for (ComplexPanel complexPanel : complexPanels)
+        {
+            int modelId = (int) complexPanel.getModelIdSpinner().getValue();
+            String name = complexPanel.getNameField().getText();
+
+            if (name.equals("Name"))
+            {
+                name = dataFinder.generateNameFromModel(modelId);
+                complexPanel.getNameField().setText(name);
+            }
         }
     }
 

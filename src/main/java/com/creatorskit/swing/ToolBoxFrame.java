@@ -3,6 +3,7 @@ package com.creatorskit.swing;
 import com.creatorskit.CreatorsConfig;
 import com.creatorskit.CreatorsPlugin;
 import com.creatorskit.models.DataFinder;
+import com.creatorskit.models.ModelUtilities;
 import com.creatorskit.programming.MovementManager;
 import com.creatorskit.programming.PathFinder;
 import com.creatorskit.programming.Programmer;
@@ -21,6 +22,7 @@ import net.runelite.client.ui.ColorScheme;
 import net.runelite.client.ui.FontManager;
 import net.runelite.client.util.ImageUtil;
 import net.runelite.client.util.LinkBrowser;
+import okhttp3.OkHttpClient;
 
 import javax.inject.Inject;
 import javax.swing.*;
@@ -39,6 +41,7 @@ public class ToolBoxFrame extends JFrame
     private final CreatorsPlugin plugin;
     private final CreatorsConfig config;
     private final ConfigManager configManager;
+    private final ModelUtilities modelUtilities;
     private final JMenuBar jMenuBar;
     private final DataFinder dataFinder;
     private final ManagerPanel managerPanel;
@@ -49,11 +52,13 @@ public class ToolBoxFrame extends JFrame
     private final TimeSheetPanel timeSheetPanel;
     private final Programmer programmer;
     private final PathFinder pathFinder;
+    private OkHttpClient httpClient;
+
     private final JTabbedPane tabbedPane = new JTabbedPane();
     private final BufferedImage ICON = ImageUtil.loadImageResource(getClass(), "/panelicon.png");
 
     @Inject
-    public ToolBoxFrame(Client client, EventBus eventBus, ClientThread clientThread, CreatorsPlugin plugin, CreatorsConfig config, ConfigManager configManager, DataFinder dataFinder, ModelOrganizer modelOrganizer, ModelAnvil modelAnvil, TransmogPanel transmogPanel, PathFinder pathFinder)
+    public ToolBoxFrame(Client client, EventBus eventBus, ClientThread clientThread, CreatorsPlugin plugin, CreatorsConfig config, ConfigManager configManager, DataFinder dataFinder, ModelOrganizer modelOrganizer, ModelAnvil modelAnvil, TransmogPanel transmogPanel, PathFinder pathFinder, ModelUtilities modelUtilities, OkHttpClient httpClient)
     {
         this.client = client;
         this.clientThread = clientThread;
@@ -61,12 +66,14 @@ public class ToolBoxFrame extends JFrame
         this.config = config;
         this.eventBus = eventBus;
         this.configManager = configManager;
+        this.modelUtilities = modelUtilities;
         this.jMenuBar = new JMenuBar();
         this.dataFinder = dataFinder;
         this.modelOrganizer = modelOrganizer;
         this.modelAnvil = modelAnvil;
         this.transmogPanel = transmogPanel;
         this.pathFinder = pathFinder;
+        this.httpClient = httpClient;
 
         Folder rootFolder = new Folder("Master Folder", FolderType.MASTER, null, null);
         DefaultMutableTreeNode managerRootNode = new DefaultMutableTreeNode(rootFolder);
@@ -86,8 +93,8 @@ public class ToolBoxFrame extends JFrame
         setupMenuBar();
         this.timeSheetPanel = new TimeSheetPanel(client, this, plugin, config, clientThread, dataFinder, managerTree, movementManager);
         this.managerPanel = new ManagerPanel(client, plugin, objectHolder, managerTree);
-        this.cacheSearcher = new CacheSearcherTab(plugin, clientThread, dataFinder);
-        this.programmer = new Programmer(client, clientThread, plugin, timeSheetPanel, dataFinder);
+        this.cacheSearcher = new CacheSearcherTab(client, plugin, clientThread, dataFinder, modelUtilities, httpClient);
+        this.programmer = new Programmer(client, config, clientThread, plugin, timeSheetPanel, dataFinder, modelUtilities);
 
         setBackground(ColorScheme.DARK_GRAY_COLOR);
         setTitle("Creator's Kit Toolbox");
@@ -160,8 +167,8 @@ public class ToolBoxFrame extends JFrame
 
         add(jMenuBar, BorderLayout.PAGE_START);
         add(tabbedPane, BorderLayout.CENTER);
-        pack();
         revalidate();
+        pack();
     }
 
     private void setupWindow()

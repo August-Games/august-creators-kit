@@ -4,16 +4,13 @@ import com.creatorskit.models.*;
 import com.creatorskit.programming.*;
 import com.creatorskit.programming.orientation.OrientationHotkeyMode;
 import com.creatorskit.saves.TransmogLoadOption;
-import com.creatorskit.saves.TransmogSave;
 import com.creatorskit.swing.*;
 import com.creatorskit.swing.anvil.ComplexPanel;
-import com.creatorskit.swing.anvil.ModelAnvil;
 import com.creatorskit.swing.timesheet.TimeSheetPanel;
 import com.creatorskit.swing.timesheet.keyframe.*;
 import com.google.gson.Gson;
 import com.google.inject.Provides;
 import javax.inject.Inject;
-import javax.swing.*;
 
 import lombok.Getter;
 import lombok.Setter;
@@ -54,7 +51,6 @@ import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
 import java.awt.image.BufferedImage;
 import java.io.*;
-import java.nio.file.Files;
 import java.util.*;
 
 @Slf4j
@@ -132,6 +128,7 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 	private Character hoveredCharacter;
 	private CKObject transmog;
 	private CKObject previewObject;
+	private Random random = new Random();
 	private Model previewArrow;
 	private CustomModel transmogModel;
 	private final int GOLDEN_CHIN = 29757;
@@ -159,8 +156,11 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 				.panel(creatorsPanel)
 				.build();
 
-		eventBus.register(creatorsPanel.getToolBox().getProgrammer());
-		eventBus.register(creatorsPanel.getToolBox().getTransmogPanel());
+		ToolBoxFrame toolBox = creatorsPanel.getToolBox();
+
+		eventBus.register(toolBox.getProgrammer());
+		eventBus.register(toolBox.getTransmogPanel());
+		eventBus.register(toolBox.getCacheSearcher().getRenderPanel());
 
 		clientToolbar.addNavigation(navigationButton);
 		overlayManager.add(overlay);
@@ -245,7 +245,7 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 
 			if (TRANSMOG_DIR.exists())
 			{
-				loadTransmog(TRANSMOG_DIR, TransmogLoadOption.BOTH);
+				creatorsPanel.getToolBox().getModelUtilities().loadTransmog(TRANSMOG_DIR, TransmogLoadOption.BOTH);
 			}
 			else
 			{
@@ -273,8 +273,11 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 		creatorsPanel.clearManagerPanels();
 		creatorsPanel.getToolBox().dispose();
 
-		eventBus.unregister(creatorsPanel.getToolBox().getProgrammer());
-		eventBus.unregister(creatorsPanel.getToolBox().getTransmogPanel());
+		ToolBoxFrame toolBox = creatorsPanel.getToolBox();
+
+		eventBus.unregister(toolBox.getProgrammer());
+		eventBus.unregister(toolBox.getTransmogPanel());
+		eventBus.unregister(toolBox.getCacheSearcher().getRenderPanel());
 
 		clientToolbar.removeNavigation(navigationButton);
 		overlayManager.remove(overlay);
@@ -455,7 +458,18 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 			return;
 		}
 
-		WorldView worldView = client.getTopLevelWorldView();
+		WorldView topLevelWorldView = client.getTopLevelWorldView();
+		addMenuEntries(topLevelWorldView);
+
+		IndexedObjectSet<? extends WorldView> worldViews = topLevelWorldView.worldViews();
+		for (WorldView worldView : worldViews)
+		{
+			addMenuEntries(worldView);
+		}
+	}
+
+	public void addMenuEntries(WorldView worldView)
+	{
 		Tile tile = worldView.getSelectedSceneTile();
 		if (tile == null)
 		{
@@ -466,7 +480,8 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 		boolean hoveringTile = false;
 		for (MenuEntry menuEntry : menuEntries)
 		{
-			if (menuEntry.getOption().equals("Walk here"))
+			String option = menuEntry.getOption();
+			if (option.equals("Walk here") || option.equals("Set heading"))
 			{
 				hoveringTile = true;
 				break;
@@ -732,59 +747,6 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 		});
 	}
 
-	public void setAnimation(Character character, int animationId)
-	{
-		if (client.getGameState() != GameState.LOGGED_IN)
-			return;
-
-		CKObject ckObject = character.getCkObject();
-		clientThread.invokeLater(() ->
-		{
-			ckObject.setAnimation(AnimationType.ACTIVE, animationId);
-			KeyFrame kf = character.getCurrentKeyFrame(KeyFrameType.ANIMATION);
-			if (kf == null)
-			{
-				int frame = (int) character.getAnimationFrameSpinner().getValue();
-				ckObject.setLoop(true);
-				ckObject.setHasAnimKeyFrame(false);
-				ckObject.setAnimationFrame(AnimationType.ACTIVE, frame, true);
-			}
-			else
-			{
-				character.pause();
-				ckObject.setHasAnimKeyFrame(true);
-			}
-		});
-	}
-
-	public void setAnimationFrame(Character character, int animFrame, boolean allowPause)
-	{
-		if (client.getGameState() != GameState.LOGGED_IN)
-			return;
-
-		CKObject ckObject = character.getCkObject();
-		clientThread.invoke(() -> ckObject.setAnimationFrame(AnimationType.ACTIVE, animFrame, allowPause));
-	}
-
-	public void setAnimationWithFrame(Character character, int animationId, int animFrame)
-	{
-		CKObject ckObject = character.getCkObject();
-		ckObject.setAnimation(AnimationType.ACTIVE, animationId);
-		ckObject.setAnimationFrame(AnimationType.ACTIVE, animFrame, true);
-		KeyFrame kf = character.getCurrentKeyFrame(KeyFrameType.ANIMATION);
-		if (kf == null)
-		{
-			ckObject.setPlaying(true);
-			ckObject.setLoop(true);
-			ckObject.setHasAnimKeyFrame(false);
-		}
-		else
-		{
-			character.pause();
-			ckObject.setHasAnimKeyFrame(true);
-		}
-	}
-
 	public void setRadius(Character character, int radius)
 	{
 		CKObject ckObject = character.getCkObject();
@@ -825,7 +787,7 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 			boolean active = character.isActive();
 
 			setModel(character, character.isCustomMode(), (int) character.getModelSpinner().getValue());
-			setAnimationWithFrame(character, (int) character.getAnimationSpinner().getValue(), (int) character.getAnimationFrameSpinner().getValue());
+			character.setAnimation(client, random, AnimationType.ACTIVE, (int) character.getAnimationSpinner().getValue(), (int) character.getAnimationFrameSpinner().getValue(), config.randomizeStartFrame(), true);
 
 			LocationOption locationOption = setHoveredTile ? LocationOption.TO_HOVERED_TILE : LocationOption.TO_SAVED_LOCATION;
 			setLocation(character, true, transplant, active ? ActiveOption.ACTIVE : ActiveOption.INACTIVE, locationOption);
@@ -844,631 +806,6 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 
 		final String message = new ChatMessageBuilder().append(ChatColorType.HIGHLIGHT).append(chatMessage).build();
 		chatMessageManager.queue(QueuedMessage.builder().type(ChatMessageType.GAMEMESSAGE).runeLiteFormattedMessage(message).build());
-	}
-
-	public Model createComplexModel(DetailedModel[] detailedModels, boolean setPriority, LightingStyle lightingStyle, CustomLighting cl, boolean sendModelStats)
-	{
-		ModelData modelData = createComplexModelData(detailedModels);
-
-		if (cl == null)
-		{
-			cl = new CustomLighting(lightingStyle.getAmbient(), lightingStyle.getContrast(), lightingStyle.getX(), lightingStyle.getY(), lightingStyle.getZ());
-		}
-
-		CustomLighting finalLighting;
-		if (lightingStyle == LightingStyle.CUSTOM)
-		{
-			finalLighting = cl;
-		}
-		else
-		{
-			finalLighting = new CustomLighting(lightingStyle.getAmbient(), lightingStyle.getContrast(), lightingStyle.getX(), lightingStyle.getY(), lightingStyle.getZ());
-		}
-
-		Model model;
-		try
-		{
-			model = modelData.light(
-					finalLighting.getAmbient(),
-					finalLighting.getContrast(),
-					finalLighting.getX(),
-					finalLighting.getZ() * -1,
-					finalLighting.getY());
-		}
-		catch (Exception e)
-		{
-			sendChatMessage("Could not Forge this model with the chosen Lighting Settings. Please adjust them and try again.");
-			return null;
-		}
-
-		if (model == null)
-			return null;
-
-		if (setPriority)
-		{
-			byte[] renderPriorities = model.getFaceRenderPriorities();
-			if (renderPriorities != null && renderPriorities.length > 0)
-				Arrays.fill(renderPriorities, (byte) 0);
-		}
-
-		if (sendModelStats)
-		{
-			sendChatMessage("Model forged. Faces: " + model.getFaceCount() + ", Vertices: " + model.getVerticesCount());
-		}
-
-		if (model.getFaceCount() >= 6200 && model.getVerticesCount() >= 3900)
-			sendChatMessage("You've exceeded the max face count of 6200 or vertex count of 3900 in this model; any additional faces or vertices will not render");
-
-		return model;
-	}
-
-	public ModelData createComplexModelData(DetailedModel[] detailedModels)
-	{
-		ModelData[] models = new ModelData[detailedModels.length];
-		boolean[] facesToInvert = new boolean[0];
-
-		for (int e = 0; e < detailedModels.length; e++)
-		{
-			DetailedModel detailedModel = detailedModels[e];
-			ModelData modelData = client.loadModelData(detailedModel.getModelId());
-			if (modelData == null)
-				return null;
-
-			modelData.cloneVertices().cloneColors();
-
-			switch(detailedModel.getRotate())
-			{
-				case 0:
-					break;
-				case 1:
-					modelData.rotateY270Ccw();
-					break;
-				case 2:
-					modelData.rotateY180Ccw();
-					break;
-				case 3:
-					modelData.rotateY90Ccw();
-			}
-
-			//swapping y and z, making y positive to align with traditional axes
-			modelData.translate(detailedModel.getXTranslate() + detailedModel.getXTile() * 128, -1 * (detailedModel.getZTranslate() + detailedModel.getZTile() * 128), detailedModel.getYTranslate() + detailedModel.getYTile() * 128);
-			modelData.scale(detailedModel.getXScale(), detailedModel.getZScale(), detailedModel.getYScale());
-
-			boolean[] faceInvert = new boolean[modelData.getFaceCount()];
-			Arrays.fill(faceInvert, detailedModel.isInvertFaces());
-			facesToInvert = ArrayUtils.addAll(facesToInvert, faceInvert);
-
-			short[] coloursFrom = detailedModel.getColoursFrom();
-			short[] coloursTo = detailedModel.getColoursTo();
-
-			if (coloursFrom == null || coloursTo == null)
-			{
-				if (!detailedModel.getRecolourNew().isEmpty() && !detailedModel.getRecolourOld().isEmpty())
-				{
-					String[] newColoursArray = detailedModel.getRecolourNew().split(",");
-					coloursTo = new short[newColoursArray.length];
-					String[] oldColoursArray = detailedModel.getRecolourOld().split(",");
-					coloursFrom = new short[oldColoursArray.length];
-
-					for (int i = 0; i < coloursFrom.length; i++)
-					{
-						coloursFrom[i] = Short.parseShort(oldColoursArray[i]);
-						coloursTo[i] = Short.parseShort(newColoursArray[i]);
-					}
-				}
-				else
-				{
-					coloursFrom = new short[0];
-					coloursTo = new short[0];
-				}
-
-				detailedModel.setColoursFrom(coloursFrom);
-				detailedModel.setColoursTo(coloursTo);
-			}
-
-			for (int i = 0; i < coloursTo.length; i++)
-			{
-				modelData.recolor(coloursFrom[i], coloursTo[i]);
-			}
-
-			short[] texturesFrom = detailedModel.getTexturesFrom();
-			short[] texturesTo = detailedModel.getTexturesTo();
-			if (texturesFrom != null && texturesTo != null)
-			{
-				try
-				{
-					modelData.cloneTextures();
-					for (int i = 0; i < texturesTo.length; i++)
-					{
-						modelData.retexture(texturesFrom[i], texturesTo[i]);
-					}
-				}
-				catch (Exception f)
-				{
-				}
-			}
-			else
-			{
-				detailedModel.setTexturesFrom(new short[0]);
-				detailedModel.setTexturesFrom(new short[0]);
-			}
-
-			models[e] = modelData;
-		}
-
-		ModelData modelData = client.mergeModels(models);
-
-		int[] faces2 = modelData.getFaceIndices2();
-		int[] faces3 = modelData.getFaceIndices3();
-		int[] faces2Copy = Arrays.copyOf(faces2, faces2.length);
-		for (int i = 0; i < modelData.getFaceCount(); i++)
-		{
-			if (facesToInvert[i])
-			{
-				faces2[i] = faces3[i];
-				faces3[i] = faces2Copy[i];
-			}
-		}
-
-		return modelData;
-	}
-
-	public void cacheToAnvil(ModelStats[] modelStatsArray, int[] kitRecolours, boolean player)
-	{
-		SwingUtilities.invokeLater(() ->
-		{
-			for (ModelStats modelStats : modelStatsArray)
-			{
-				if (player)
-				{
-					String name = modelStats.getBodyPart().getName();
-					if (modelStats.getBodyPart() == BodyPart.NA)
-						name = "Item";
-
-					short[] itemRecolourTo = modelStats.getRecolourTo();
-					short[] itemRecolourFrom = modelStats.getRecolourFrom();
-					short[] kitRecolourTo = KitRecolourer.getKitRecolourTo(modelStats.getBodyPart(), kitRecolours);
-					short[] kitRecolourFrom = KitRecolourer.getKitRecolourFrom(modelStats.getBodyPart());
-
-					itemRecolourTo = ArrayUtils.addAll(itemRecolourTo, kitRecolourTo);
-					itemRecolourFrom = ArrayUtils.addAll(itemRecolourFrom, kitRecolourFrom);
-
-					creatorsPanel.getModelAnvil().createComplexPanel(
-							name,
-							modelStats.getModelId(),
-							9,
-							0, 0, 0,
-							0, 0, modelStats.getTranslateZ(),
-							modelStats.getResizeX(), modelStats.getResizeY(), modelStats.getResizeZ(),
-							0,
-							"", "",
-							itemRecolourFrom, itemRecolourTo,
-							modelStats.getTextureFrom(), modelStats.getTextureTo(),
-							false);
-
-					continue;
-				}
-
-				creatorsPanel.getModelAnvil().createComplexPanel(
-						modelStats.getBodyPart().getName(),
-						modelStats.getModelId(),
-						8,
-						0, 0, 0,
-						0, 0, modelStats.getTranslateZ(),
-						modelStats.getResizeX(), modelStats.getResizeY(), modelStats.getResizeZ(),
-						0,
-						"", "",
-						modelStats.getRecolourFrom(), modelStats.getRecolourTo(),
-						modelStats.getTextureFrom(), modelStats.getTextureTo(),
-						false);
-			}
-		});
-	}
-
-	public void cacheToAnvil(CustomModelType type, int id)
-	{
-		Thread thread = new Thread(() ->
-		{
-			ModelStats[] modelStats;
-			String name;
-
-			switch (type)
-			{
-				case CACHE_NPC:
-					modelStats = dataFinder.findModelsForNPC(id);
-					name = dataFinder.getLastFound();
-					break;
-				default:
-				case CACHE_OBJECT:
-					modelStats = dataFinder.findModelsForObject(id, -1, LightingStyle.DEFAULT, true);
-					name = dataFinder.getLastFound();
-					break;
-				case CACHE_GROUND_ITEM:
-					modelStats = dataFinder.findModelsForGroundItem(id, CustomModelType.CACHE_GROUND_ITEM);
-					name = dataFinder.getLastFound();
-					break;
-				case CACHE_MAN_WEAR:
-					modelStats = dataFinder.findModelsForGroundItem(id, CustomModelType.CACHE_MAN_WEAR);
-					name = dataFinder.getLastFound();
-					break;
-				case CACHE_WOMAN_WEAR:
-					modelStats = dataFinder.findModelsForGroundItem(id, CustomModelType.CACHE_WOMAN_WEAR);
-					name = dataFinder.getLastFound();
-					break;
-				case CACHE_SPOTANIM:
-					modelStats = dataFinder.findSpotAnim(id);
-					name = dataFinder.getLastFound();
-			}
-
-			if (modelStats == null || modelStats.length == 0)
-			{
-				sendChatMessage("Could not find the " + type + " you were looking for in the cache.");
-				return;
-			}
-
-			cacheToAnvil(modelStats, new int[0], false);
-			sendChatMessage("Model sent to Anvil: " + name);
-		});
-		thread.start();
-	}
-
-	public void cacheToCustomModel(CustomModelType type, int id, int modelType)
-	{
-		Thread thread = new Thread(() ->
-		{
-			ModelStats[] modelStats;
-			String name;
-			CustomModelComp comp;
-			CustomLighting lighting;
-
-			switch (type)
-			{
-				case CACHE_NPC:
-					modelStats = dataFinder.findModelsForNPC(id);
-					break;
-				default:
-				case CACHE_OBJECT:
-					modelStats = dataFinder.findModelsForObject(id, modelType, LightingStyle.DEFAULT, false);
-					break;
-				case CACHE_GROUND_ITEM:
-					modelStats = dataFinder.findModelsForGroundItem(id, CustomModelType.CACHE_GROUND_ITEM);
-					break;
-				case CACHE_MAN_WEAR:
-					modelStats = dataFinder.findModelsForGroundItem(id, CustomModelType.CACHE_MAN_WEAR);
-					break;
-				case CACHE_WOMAN_WEAR:
-					modelStats = dataFinder.findModelsForGroundItem(id, CustomModelType.CACHE_WOMAN_WEAR);
-					break;
-				case CACHE_SPOTANIM:
-					modelStats = dataFinder.findSpotAnim(id);
-			}
-
-			if (modelStats == null || modelStats.length == 0)
-			{
-				sendChatMessage("Could not find the " + type + " you were looking for in the cache.");
-				return;
-			}
-
-			switch (type)
-			{
-				case CACHE_NPC:
-					name = dataFinder.getLastFound();
-					lighting = new CustomLighting(64, 850, -30, -30, 50);
-					comp = new CustomModelComp(0, CustomModelType.CACHE_NPC, id, modelStats, null, null, null, LightingStyle.ACTOR, lighting, false, name);
-					break;
-				default:
-				case CACHE_OBJECT:
-					name = dataFinder.getLastFound();
-					lighting = modelStats[0].getLighting();
-					comp = new CustomModelComp(0, CustomModelType.CACHE_OBJECT, id, modelStats, null, null, null, LightingStyle.CUSTOM, lighting, false, name);
-					break;
-				case CACHE_GROUND_ITEM:
-					name = dataFinder.getLastFound();
-					lighting = new CustomLighting(64, 768, -50, -50, 10);
-					comp = new CustomModelComp(0, CustomModelType.CACHE_GROUND_ITEM, id, modelStats, null, null, null, LightingStyle.DEFAULT, lighting, false, name);
-					break;
-				case CACHE_MAN_WEAR:
-					name = dataFinder.getLastFound();
-					lighting = new CustomLighting(64, 768, -50, -50, 10);
-					comp = new CustomModelComp(0, CustomModelType.CACHE_MAN_WEAR, id, modelStats, null, null, null, LightingStyle.DEFAULT, lighting, false, name);
-					break;
-				case CACHE_WOMAN_WEAR:
-					name = dataFinder.getLastFound();
-					lighting = new CustomLighting(64, 768, -50, -50, 10);
-					comp = new CustomModelComp(0, CustomModelType.CACHE_WOMAN_WEAR, id, modelStats, null, null, null, LightingStyle.DEFAULT, lighting, false, name);
-					break;
-				case CACHE_SPOTANIM:
-					name = dataFinder.getLastFound();
-					lighting = modelStats[0].getLighting();
-					comp = new CustomModelComp(0, CustomModelType.CACHE_SPOTANIM, id, modelStats, null, null, null, LightingStyle.CUSTOM, lighting, false, name);
-					break;
-			}
-
-			clientThread.invokeLater(() ->
-			{
-				Model model = constructModelFromCache(modelStats, new int[0], false, LightingStyle.CUSTOM, lighting);
-				CustomModel customModel = new CustomModel(model, comp);
-				addCustomModel(customModel, false);
-				sendChatMessage("Model stored: " + name);
-			});
-		});
-		thread.start();
-	}
-
-	public Model constructModelFromCache(ModelStats[] modelStatsArray, int[] kitRecolours, boolean player, LightingStyle ls, CustomLighting cl)
-	{
-		ModelData md = constructModelDataFromCache(modelStatsArray, kitRecolours, player);
-		if (ls == LightingStyle.CUSTOM)
-		{
-			return client.mergeModels(md).light(cl.getAmbient(), cl.getContrast(), cl.getX(), -cl.getZ(), cl.getY());
-		}
-
-		return client.mergeModels(md).light(ls.getAmbient(), ls.getContrast(), ls.getX(), -ls.getZ(), ls.getY());
-	}
-
-	public ModelData constructModelDataFromCache(ModelStats[] modelStatsArray, int[] kitRecolours, boolean player)
-	{
-		ModelData[] mds = new ModelData[modelStatsArray.length];
-
-		for (int i = 0; i < modelStatsArray.length; i++)
-		{
-			ModelStats modelStats = modelStatsArray[i];
-			ModelData modelData = client.loadModelData(modelStats.getModelId());
-
-			if (modelData == null)
-				continue;
-
-			modelData.cloneColors().cloneVertices();
-
-			for (short s = 0; s < modelStats.getRecolourFrom().length; s++)
-				modelData.recolor(modelStats.getRecolourFrom()[s], modelStats.getRecolourTo()[s]);
-
-			if (player)
-				KitRecolourer.recolourKitModel(modelData, modelStats.getBodyPart(), kitRecolours);
-
-			short[] textureFrom = modelStats.getTextureFrom();
-			short[] textureTo = modelStats.getTextureTo();
-
-			if (textureFrom == null || textureTo == null)
-			{
-				modelStats.setTextureFrom(new short[0]);
-				modelStats.setTextureTo(new short[0]);
-			}
-
-			textureFrom = modelStats.getTextureFrom();
-			textureTo = modelStats.getTextureTo();
-
-			if (textureFrom.length > 0 && textureTo.length > 0)
-			{
-				for (int e = 0; e < textureFrom.length; e++)
-				{
-					modelData.retexture(textureFrom[e], textureTo[e]);
-				}
-			}
-
-			if (modelStats.getResizeX() == 0 && modelStats.getResizeY() == 0 && modelStats.getResizeZ() == 0)
-			{
-				modelStats.setResizeX(128);
-				modelStats.setResizeY(128);
-				modelStats.setResizeZ(128);
-			}
-
-			modelData.scale(modelStats.getResizeX(), modelStats.getResizeZ(), modelStats.getResizeY());
-
-			modelData.translate(0, -1 * modelStats.getTranslateZ(), 0);
-
-			mds[i] = modelData;
-		}
-
-		return client.mergeModels(mds);
-	}
-
-	public void customModelToAnvil(CustomModel customModel)
-	{
-		if (customModel.getComp().getType() == CustomModelType.BLENDER)
-		{
-			sendChatMessage("Blender models cannot currently be used in the Anvil.");
-			return;
-		}
-
-		SwingUtilities.invokeLater(() ->
-		{
-			CustomModelComp comp = customModel.getComp();
-			sendChatMessage("Model sent to Anvil: " + comp.getName());
-			ModelAnvil modelAnvil = creatorsPanel.getModelAnvil();
-
-			CustomLighting cl;
-			LightingStyle lightingStyle = comp.getLightingStyle();
-			if (lightingStyle == LightingStyle.CUSTOM)
-			{
-				cl = comp.getCustomLighting();
-			}
-			else
-			{
-				cl = new CustomLighting(
-						lightingStyle.getAmbient(),
-						lightingStyle.getContrast(),
-						lightingStyle.getX(),
-						lightingStyle.getY(),
-						lightingStyle.getZ());
-			}
-
-			modelAnvil.setLightingSettings(
-					comp.getLightingStyle(),
-					cl.getAmbient(),
-					cl.getContrast(),
-					cl.getX(),
-					cl.getY(),
-					cl.getZ());
-
-			modelAnvil.getPriorityCheckBox().setSelected(comp.isPriority());
-			modelAnvil.getNameField().setText(comp.getName());
-
-			if (comp.getModelStats() == null)
-			{
-				DetailedModel[] detailedModels = comp.getDetailedModels();
-				for (DetailedModel detailedModel : detailedModels)
-					modelAnvil.createComplexPanel(detailedModel);
-
-				return;
-			}
-
-			switch(comp.getType())
-			{
-				case FORGED:
-				case CACHE_SPOTANIM:
-				case CACHE_NPC:
-				case CACHE_OBJECT:
-				case CACHE_GROUND_ITEM:
-				case CACHE_MAN_WEAR:
-				case CACHE_WOMAN_WEAR:
-					cacheToAnvil(comp.getModelStats(), comp.getKitRecolours(), false);
-					break;
-				case CACHE_PLAYER:
-					cacheToAnvil(comp.getModelStats(), comp.getKitRecolours(), true);
-			}
-		});
-	}
-
-	public void loadCustomModelToAnvil(File file)
-	{
-		ModelAnvil modelAnvil = creatorsPanel.getModelAnvil();
-		try
-		{
-			Reader reader = Files.newBufferedReader(file.toPath());
-			CustomModelComp comp = gson.fromJson(reader, CustomModelComp.class);
-
-			SwingUtilities.invokeLater(() ->
-			{
-				for (DetailedModel detailedModel : comp.getDetailedModels())
-				{
-					modelAnvil.createComplexPanel(detailedModel);
-				}
-			});
-
-			LightingStyle ls = comp.getLightingStyle();
-			CustomLighting cl = comp.getCustomLighting();
-			if (cl == null)
-				cl = new CustomLighting(ls.getAmbient(), ls.getContrast(), ls.getX(), ls.getY(), ls.getZ());
-
-			modelAnvil.setLightingSettings(
-					comp.getLightingStyle(),
-					cl.getAmbient(),
-					cl.getContrast(),
-					cl.getX(),
-					cl.getY(),
-					cl.getZ());
-
-			modelAnvil.getPriorityCheckBox().setSelected(comp.isPriority());
-			modelAnvil.getNameField().setText(comp.getName());
-			reader.close();
-		}
-		catch (Exception e)
-		{
-			sendChatMessage("Failed to load this Saved Model file.");
-		}
-	}
-
-	public void loadCustomModel(File file)
-	{
-		try
-		{
-			Reader reader = Files.newBufferedReader(file.toPath());
-			CustomModelComp comp = gson.fromJson(reader, CustomModelComp.class);
-			clientThread.invokeLater(() ->
-			{
-				LightingStyle ls = comp.getLightingStyle();
-				CustomLighting cl = comp.getCustomLighting();
-				if (cl == null)
-					cl = new CustomLighting(ls.getAmbient(), ls.getContrast(), ls.getX(), ls.getY(), ls.getZ());
-
-				Model model = createComplexModel(comp.getDetailedModels(), comp.isPriority(), comp.getLightingStyle(), cl, true);
-				CustomModel customModel = new CustomModel(model, comp);
-				addCustomModel(customModel, false);
-			});
-			reader.close();
-		}
-		catch (Exception e)
-		{
-			sendChatMessage("Failed to load this Saved Model file.");
-		}
-	}
-
-	public void loadTransmog(File file, TransmogLoadOption transmogLoadOption)
-	{
-		try
-		{
-			Reader reader = Files.newBufferedReader(file.toPath());
-			TransmogSave transmogSave = gson.fromJson(reader, TransmogSave.class);
-			CustomModelComp comp = transmogSave.getCustomModelComp();
-			if (comp != null)
-			{
-				DetailedModel[] detailedModels = comp.getDetailedModels();
-				if (detailedModels == null)
-				{
-					detailedModels = creatorsPanel.getModelOrganizer().modelToDetailedPanels(comp);
-					comp.setDetailedModels(detailedModels);
-				}
-			}
-
-			reader.close();
-
-			boolean loadCustomModel = false;
-			switch (transmogLoadOption)
-			{
-				case ANIMATIONS:
-					creatorsPanel.getToolBox().getTransmogPanel().loadTransmog(transmogSave);
-					break;
-				case CUSTOM_MODEL:
-					if (comp != null)
-						loadCustomModel = true;
-					break;
-				case BOTH:
-					creatorsPanel.getToolBox().getTransmogPanel().loadTransmog(transmogSave);
-					if (comp != null)
-						loadCustomModel = true;
-			}
-
-			if (loadCustomModel)
-			{
-				clientThread.invokeLater(() ->
-				{
-					LightingStyle ls = comp.getLightingStyle();
-					CustomLighting cl = comp.getCustomLighting();
-					if (cl == null)
-						cl = new CustomLighting(ls.getAmbient(), ls.getContrast(), ls.getX(), ls.getY(), ls.getZ());
-					Model model = createComplexModel(comp.getDetailedModels(), comp.isPriority(), comp.getLightingStyle(), cl, false);
-					CustomModel customModel = new CustomModel(model, comp);
-					addCustomModel(customModel, false);
-					creatorsPanel.getToolBox().getTransmogPanel().setTransmog(customModel);
-				});
-			}
-		}
-		catch (Exception e)
-		{
-			sendChatMessage("Failed to load the selected Transmog. Make sure you selected an appropriate transmog file.");
-		}
-	}
-
-	public void addCustomModel(CustomModel customModel, boolean setComboBox)
-	{
-		SwingUtilities.invokeLater(() -> creatorsPanel.addModelOption(customModel, setComboBox));
-		storedModels.add(customModel);
-	}
-
-	public void removeCustomModel(CustomModel customModel)
-	{
-		creatorsPanel.removeModelOption(customModel);
-		storedModels.remove(customModel);
-	}
-
-	public void updatePanelComboBoxes()
-	{
-		SwingUtilities.invokeLater(() ->
-		{
-			for (JComboBox<CustomModel> comboBox : creatorsPanel.getComboBoxes())
-				comboBox.updateUI();
-		});
 	}
 
 	private void updatePreviewObject(Tile tile)
@@ -1615,11 +952,10 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 			animId = ckObject.getAnimationId();
 		}
 
-		AnimationController ac = ckObject.getAnimationController();
 		previewObject.setModel(model);
 		previewObject.setOrientation(orientation);
 		previewObject.setAnimation(AnimationType.ACTIVE, animId);
-		previewObject.setAnimationFrame(AnimationType.ACTIVE, ckObject.getAnimationFrame(AnimationType.ACTIVE), true);
+		previewObject.setAnimationFrame(AnimationType.ACTIVE, ckObject.getAnimationFrame(AnimationType.ACTIVE), random, false,true);
 		previewObject.setLocation(lp, client.getTopLevelWorldView().getPlane());
 		previewObject.setRadius(ckObject.getRadius());
 		previewObject.setActive(true);

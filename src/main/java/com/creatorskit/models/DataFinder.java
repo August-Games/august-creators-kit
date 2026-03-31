@@ -27,7 +27,6 @@ import java.util.concurrent.CountDownLatch;
 @Getter
 public class DataFinder
 {
-
     public enum DataType
     {
         NPC,
@@ -37,7 +36,8 @@ public class DataFinder
         KIT,
         SEQ,
         ANIM,
-        WEAPON_ANIM
+        WEAPON_ANIM,
+        SOUND
     }
 
     @Data
@@ -59,8 +59,8 @@ public class DataFinder
     OkHttpClient httpClient;
     CreatorsConfig config;
 
-    private String lastFound;
     private int lastAnim;
+    private static final String DEFAULT_NAME = "Name";
 
     private final List<NPCData> npcData = new ArrayList<>();
     private final List<ObjectData> objectData = new ArrayList<>();
@@ -70,6 +70,7 @@ public class DataFinder
     private final List<SeqData> seqData = new ArrayList<>();
     private final List<AnimData> animData = new ArrayList<>();
     private final List<WeaponAnimData> weaponAnimData = new ArrayList<>();
+    private final List<SoundData> soundData = new ArrayList<>();
 
     private static final BodyPart[] bodyParts = new BodyPart[]{
             BodyPart.HEAD,
@@ -115,6 +116,7 @@ public class DataFinder
         lookupSeqData();
         lookupAnimData();
         lookupWeaponAnimationData();
+        lookupSoundData();
     }
 
     /**
@@ -510,12 +512,19 @@ public class DataFinder
                             ls.getY(),
                             ls.getZ());
 
+                    String name = itemDatum.getName();
+                    if (name.equals("null") || name.isEmpty())
+                    {
+                        name = DEFAULT_NAME;
+                    }
+
                     for (int id : modelIds)
                     {
                         if (id != -1)
                         {
                             modelStats.add(new ModelStats(
                                     id,
+                                    name,
                                     bodyParts[i],
                                     rf,
                                     rt,
@@ -609,6 +618,7 @@ public class DataFinder
                         {
                             modelStats.add(new ModelStats(
                                     id,
+                                    bodyParts[i].getName(),
                                     bodyParts[i],
                                     rf,
                                     rt,
@@ -685,8 +695,15 @@ public class DataFinder
                             ls.getY(),
                             ls.getZ());
 
+                    String name = spotanimData.getName();
+                    if (name.equals("null") || name.isEmpty())
+                    {
+                        name = DEFAULT_NAME;
+                    }
+
                     modelStats.add(new ModelStats(
                             modelId,
+                            name,
                             BodyPart.SPOTANIM,
                             rf,
                             rt,
@@ -747,7 +764,6 @@ public class DataFinder
             {
                 int modelId = spotanimData.getModelId();
 
-                lastFound = spotanimData.getName();
                 lastAnim = spotanimData.getAnimationId();
 
                 short[] rf = new short[0];
@@ -788,8 +804,15 @@ public class DataFinder
                         ls.getY(),
                         ls.getZ());
 
+                String name = spotanimData.getName();
+                if (name.equals("null") || name.isEmpty())
+                {
+                    name = DEFAULT_NAME;
+                }
+
                 modelStats.add(new ModelStats(
                         modelId,
+                        name,
                         BodyPart.SPOTANIM,
                         rf,
                         rt,
@@ -821,7 +844,6 @@ public class DataFinder
         ArrayList<ModelStats> modelStats = new ArrayList<>();
         int modelId = spotanimData.getModelId();
 
-        lastFound = spotanimData.getName();
         lastAnim = spotanimData.getAnimationId();
 
         short[] rf = new short[0];
@@ -862,8 +884,15 @@ public class DataFinder
                 ls.getY(),
                 ls.getZ());
 
+        String name = spotanimData.getName();
+        if (name.equals("null") || name.isEmpty())
+        {
+            name = DEFAULT_NAME;
+        }
+
         modelStats.add(new ModelStats(
                 modelId,
+                name,
                 BodyPart.SPOTANIM,
                 rf,
                 rt,
@@ -943,7 +972,6 @@ public class DataFinder
         {
             if (npcData.getId() == npcId)
             {
-                lastFound = npcData.getName();
                 lastAnim = npcData.getStandingAnimation();
 
                 int[] modelIds = npcData.getModels();
@@ -988,6 +1016,7 @@ public class DataFinder
                 {
                     modelStats.add(new ModelStats(
                             i,
+                            npcData.getName(),
                             BodyPart.NA,
                             rf,
                             rt,
@@ -1021,7 +1050,6 @@ public class DataFinder
         {
             if (npcData.getId() == npcId)
             {
-                lastFound = npcData.getName();
                 lastAnim = npcData.getStandingAnimation();
 
                 int[] modelIds = overrides.getModelIds();
@@ -1038,6 +1066,7 @@ public class DataFinder
                 {
                     modelStats.add(new ModelStats(
                             i,
+                            npcData.getName(),
                             BodyPart.NA,
                             new short[0],
                             new short[0],
@@ -1071,7 +1100,6 @@ public class DataFinder
         {
             if (npcData.getId() == npcId)
             {
-                lastFound = npcData.getName();
                 lastAnim = npcData.getStandingAnimation();
 
                 int[] modelIds = composition.getModels();
@@ -1096,6 +1124,7 @@ public class DataFinder
                 {
                     modelStats.add(new ModelStats(
                             i,
+                            npcData.getName(),
                             BodyPart.NA,
                             colourToReplace,
                             colourToReplaceWith,
@@ -1163,7 +1192,6 @@ public class DataFinder
         {
             if (objectData.getId() == objectId)
             {
-                lastFound = objectData.getName();
                 int[] modelIds = objectData.getObjectModels();
                 if (modelIds == null)
                 {
@@ -1245,10 +1273,17 @@ public class DataFinder
                         ls.getY(),
                         ls.getZ());
 
+                String name = objectData.getName();
+                if (name.equals("null") || name.isEmpty())
+                {
+                    name = DEFAULT_NAME;
+                }
+
                 for (int i : modelIds)
                 {
                     modelStats.add(new ModelStats(
                             i,
+                            name,
                             BodyPart.NA,
                             rf,
                             rt,
@@ -1317,7 +1352,6 @@ public class DataFinder
         {
             if (item.getId() == itemId)
             {
-                lastFound = item.getName();
                 int[] modelIds = new int[0];
 
                 switch (modelType)
@@ -1398,6 +1432,12 @@ public class DataFinder
                         ls.getY(),
                         ls.getZ());
 
+                String name = item.getName();
+                if (name.equals("null") || name.isEmpty())
+                {
+                    name = DEFAULT_NAME;
+                }
+
                 for (int i = 0; i < modelIds.length; i++)
                 {
                     int id = modelIds[i];
@@ -1419,6 +1459,7 @@ public class DataFinder
                     {
                         modelStats.add(new ModelStats(
                                 id,
+                                name,
                                 BodyPart.wearPosToBodyPart(wearPos),
                                 rf,
                                 rt,
@@ -1503,5 +1544,101 @@ public class DataFinder
         }
 
         return null;
+    }
+
+    private void lookupSoundData()
+    {
+        Request request = new Request.Builder().url("https://raw.githubusercontent.com/ScreteMonge/cache-converter/refs/heads/master/.venv/sounds.json").build();
+        Call call = httpClient.newCall(request);
+        call.enqueue(new Callback()
+        {
+            @Override
+            public void onFailure(Call call, IOException e)
+            {
+                log.debug("Failed to access URL: https://raw.githubusercontent.com/ScreteMonge/cache-converter/refs/heads/master/.venv/sounds.json");
+                executeCallbacks(DataType.SOUND);
+            }
+
+            @Override
+            public void onResponse(Call call, Response response)
+            {
+                if (response.isSuccessful() && response.body() != null)
+                {
+                    //create a reader to read the URL
+                    InputStreamReader reader = new InputStreamReader(response.body().byteStream());
+
+                    Type listType = new TypeToken<List<SoundData>>() {}.getType();
+                    List<SoundData> list = gson.fromJson(reader, listType);
+
+                    soundData.addAll(list);
+                    response.body().close();
+                }
+                executeCallbacks(DataType.SOUND);
+            }
+        });
+    }
+
+    public String generateNameFromModel(int id)
+    {
+        if (id == -1)
+        {
+            return DEFAULT_NAME;
+        }
+
+        for (KitData data : kitData)
+        {
+            if (data.getModels() != null && Arrays.stream(data.getModels()).anyMatch(e -> e == id))
+            {
+                return BodyPart.bodyPartIdToBodyPart(data.getBodyPartId()).getName();
+            }
+
+            if (data.getChatheadModels() != null && Arrays.stream(data.getChatheadModels()).anyMatch(e -> e == id))
+            {
+                return BodyPart.bodyPartIdToBodyPart(data.getBodyPartId()).getName();
+            }
+        }
+
+        for (ObjectData data : objectData)
+        {
+            if (data.getObjectModels() == null)
+            {
+                continue;
+            }
+
+            if (Arrays.stream(data.getObjectModels()).anyMatch(e -> e == id))
+            {
+                return data.getName();
+            }
+        }
+
+        for (ItemData data : itemData)
+        {
+            int[] itemModels = new int[]{
+                    data.getFemaleModel0(),
+                    data.getFemaleModel1(),
+                    data.getFemaleModel2(),
+                    data.getFemaleHeadModel(),
+                    data.getFemaleHeadModel2(),
+                    data.getMaleModel0(),
+                    data.getMaleModel1(),
+                    data.getMaleModel2(),
+                    data.getMaleHeadModel(),
+                    data.getMaleHeadModel2()};
+
+            if (Arrays.stream(itemModels).anyMatch(e -> e == id))
+            {
+                return data.getName();
+            }
+        }
+
+        for (SpotanimData data : spotanimData)
+        {
+            if (data.getModelId() == id)
+            {
+                return data.getName();
+            }
+        }
+
+        return DEFAULT_NAME;
     }
 }
