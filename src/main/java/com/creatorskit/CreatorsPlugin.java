@@ -147,6 +147,13 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 	@Override
 	protected void startUp() throws Exception
 	{
+		// Lazily load the cache catalog now that the plugin is enabled. DataFinder no longer
+		// loads in its constructor, so nothing is held while the plugin is disabled. The lookups
+		// run asynchronously (OkHttp), so this does not stall the client thread; consumers that
+		// read the data (Cache Searcher, model dropdowns, AttributePanel) already gate their
+		// first access on DataFinder.isDataLoaded()/addLoadCallback().
+		dataFinder.reloadData();
+
 		creatorsPanel = injector.getInstance(CreatorsPanel.class);
 		final BufferedImage icon = ImageUtil.loadImageResource(getClass(), "/panelicon.png");
 		navigationButton = NavigationButton.builder()
@@ -317,6 +324,10 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 		keyManager.unregisterKeyListener(redoListener);
 		mouseManager.unregisterMouseWheelListener(this::mouseWheelMoved);
 		mouseManager.unregisterMouseListener(this);
+
+		// Free the entire cache catalog so disabling the plugin reclaims the memory (and lets the
+		// forced-loaded model geometry be GC'd). Re-loaded on the next startUp().
+		dataFinder.clearData();
 	}
 
 	@Subscribe

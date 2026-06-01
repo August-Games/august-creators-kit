@@ -13,6 +13,7 @@ import okhttp3.*;
 import org.apache.commons.lang3.ArrayUtils;
 
 import javax.inject.Inject;
+import javax.inject.Singleton;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.lang.reflect.Type;
@@ -25,6 +26,7 @@ import java.util.concurrent.CountDownLatch;
 
 @Slf4j
 @Getter
+@Singleton
 public class DataFinder
 {
     public enum DataType
@@ -62,6 +64,14 @@ public class DataFinder
     private int lastAnim;
     private static final String DEFAULT_NAME = "Name";
 
+    /**
+     * Incremented every time the catalog is cleared/reloaded. Async load callbacks capture
+     * the epoch active when they were enqueued and discard their results if it has since
+     * changed, so data fetched before a {@link #clearData()} (e.g. the plugin being disabled)
+     * never repopulates the cleared collections.
+     */
+    private volatile int loadEpoch = 0;
+
     private final List<NPCData> npcData = new ArrayList<>();
     private final List<ObjectData> objectData = new ArrayList<>();
     private final List<SpotanimData> spotanimData = new ArrayList<>();
@@ -96,18 +106,14 @@ public class DataFinder
         this.gson = gson;
         this.httpClient = httpClient;
         this.config = config;
-        reloadData();
+        // Do NOT load the catalog here. RuneLite instantiates every installed plugin (and its
+        // @Inject dependencies) regardless of the enabled toggle, so loading in the constructor
+        // would pin the entire cache catalog in memory while the plugin is disabled. The catalog
+        // is loaded lazily from CreatorsPlugin.startUp() and freed in CreatorsPlugin.shutDown().
     }
 
     public void reloadData() {
-        npcData.clear();
-        objectData.clear();
-        spotanimData.clear();
-        itemData.clear();
-        kitData.clear();
-        seqData.clear();
-        animData.clear();
-        weaponAnimData.clear();
+        clearData();
         lookupNPCData();
         lookupObjectData();
         lookupSpotAnimData();
@@ -117,6 +123,35 @@ public class DataFinder
         lookupAnimData();
         lookupWeaponAnimationData();
         lookupSoundData();
+    }
+
+    /**
+     * Clears every loaded catalog collection and resets load state so this DataFinder holds no
+     * ObjectData/ItemData/NPCData/SeqData/etc. Bumping {@link #loadEpoch} invalidates any
+     * in-flight async loads so their results are discarded instead of repopulating the cleared
+     * collections. Called from CreatorsPlugin.shutDown() to reclaim memory when the plugin is
+     * disabled, and at the start of {@link #reloadData()} before a fresh load.
+     */
+    public void clearData() {
+        loadEpoch++;
+        npcData.clear();
+        objectData.clear();
+        spotanimData.clear();
+        itemData.clear();
+        kitData.clear();
+        seqData.clear();
+        animData.clear();
+        weaponAnimData.clear();
+        soundData.clear();
+        lastAnim = 0;
+        for (DataType dataType : DataType.values())
+        {
+            synchronized (dataType)
+            {
+                loadState.put(dataType, false);
+                loadCallbacks.get(dataType).clear();
+            }
+        }
     }
 
     /**
@@ -154,6 +189,7 @@ public class DataFinder
 
     private void lookupKitData()
     {
+        final int epoch = loadEpoch;
         Request kitRequest = new Request.Builder()
                 .url("https://raw.githubusercontent.com/ScreteMonge/cache-converter/master/.venv/kit.json")
                 .build();
@@ -164,7 +200,10 @@ public class DataFinder
             public void onFailure(Call call, IOException e)
             {
                 log.debug("Failed to access URL: https://raw.githubusercontent.com/ScreteMonge/cache-converter/master/.venv/kit.json");
-                executeCallbacks(DataType.KIT);
+                if (epoch == loadEpoch)
+                {
+                    executeCallbacks(DataType.KIT);
+                }
             }
 
             @Override
@@ -175,17 +214,24 @@ public class DataFinder
                     InputStreamReader reader = new InputStreamReader(response.body().byteStream());
                     Type listType = new TypeToken<List<KitData>>() {}.getType();
                     List<KitData> list = gson.fromJson(reader, listType);
-                    kitData.addAll(list);
+                    if (epoch == loadEpoch)
+                    {
+                        kitData.addAll(list);
+                    }
 
                     response.body().close();
                 }
-                executeCallbacks(DataType.KIT);
+                if (epoch == loadEpoch)
+                {
+                    executeCallbacks(DataType.KIT);
+                }
             }
         });
     }
 
     private void lookupSeqData()
     {
+        final int epoch = loadEpoch;
         Request seqRequest = new Request.Builder()
                 .url(config.configBaseUrl() + "sequences.json")
                 .build();
@@ -196,7 +242,10 @@ public class DataFinder
             public void onFailure(Call call, IOException e)
             {
                 log.debug("Failed to access URL: {}sequences.json", config.configBaseUrl());
-                executeCallbacks(DataType.SEQ);
+                if (epoch == loadEpoch)
+                {
+                    executeCallbacks(DataType.SEQ);
+                }
             }
 
             @Override
@@ -207,17 +256,24 @@ public class DataFinder
                     InputStreamReader reader = new InputStreamReader(response.body().byteStream());
                     Type listType = new TypeToken<List<SeqData>>() {}.getType();
                     List<SeqData> list = gson.fromJson(reader, listType);
-                    seqData.addAll(list);
+                    if (epoch == loadEpoch)
+                    {
+                        seqData.addAll(list);
+                    }
 
                     response.body().close();
                 }
-                executeCallbacks(DataType.SEQ);
+                if (epoch == loadEpoch)
+                {
+                    executeCallbacks(DataType.SEQ);
+                }
             }
         });
     }
 
     private void lookupAnimData()
     {
+        final int epoch = loadEpoch;
         Request animRequest = new Request.Builder()
                 .url(config.configBaseUrl() + "anims.json")
                 .build();
@@ -228,7 +284,10 @@ public class DataFinder
             public void onFailure(Call call, IOException e)
             {
                 log.debug("Failed to access URL: {}anims.json", config.configBaseUrl());
-                executeCallbacks(DataType.ANIM);
+                if (epoch == loadEpoch)
+                {
+                    executeCallbacks(DataType.ANIM);
+                }
             }
 
             @Override
@@ -239,11 +298,17 @@ public class DataFinder
                     InputStreamReader reader = new InputStreamReader(response.body().byteStream());
                     Type listType = new TypeToken<List<AnimData>>() {}.getType();
                     List<AnimData> list = gson.fromJson(reader, listType);
-                    animData.addAll(list);
+                    if (epoch == loadEpoch)
+                    {
+                        animData.addAll(list);
+                    }
 
                     response.body().close();
                 }
-                executeCallbacks(DataType.ANIM);
+                if (epoch == loadEpoch)
+                {
+                    executeCallbacks(DataType.ANIM);
+                }
             }
         });
     }
@@ -724,6 +789,7 @@ public class DataFinder
 
     private void lookupSpotAnimData()
     {
+        final int epoch = loadEpoch;
         Request spotanimRequest = new Request.Builder()
                 .url(config.configBaseUrl() + "spotanims.json")
                 .build();
@@ -734,7 +800,10 @@ public class DataFinder
             public void onFailure(Call call, IOException e)
             {
                 log.debug("Failed to access URL: {}spotanims.json", config.configBaseUrl());
-                executeCallbacks(DataType.SPOTANIM);
+                if (epoch == loadEpoch)
+                {
+                    executeCallbacks(DataType.SPOTANIM);
+                }
             }
 
             @Override
@@ -747,10 +816,16 @@ public class DataFinder
                     Type listType = new TypeToken<List<SpotanimData>>() {}.getType();
                     List<SpotanimData> list = gson.fromJson(reader, listType);
 
-                    spotanimData.addAll(list);
+                    if (epoch == loadEpoch)
+                    {
+                        spotanimData.addAll(list);
+                    }
                     response.body().close();
                 }
-                executeCallbacks(DataType.SPOTANIM);
+                if (epoch == loadEpoch)
+                {
+                    executeCallbacks(DataType.SPOTANIM);
+                }
             }
         });
     }
@@ -922,6 +997,7 @@ public class DataFinder
 
     public void lookupNPCData()
     {
+        final int epoch = loadEpoch;
         Request request = new Request.Builder().url(config.configBaseUrl() + "npc_defs.json").build();
         Call call = httpClient.newCall(request);
         call.enqueue(new Callback()
@@ -930,7 +1006,10 @@ public class DataFinder
             public void onFailure(Call call, IOException e)
             {
                 log.debug("Failed to access URL: {}npc_defs.json", config.configBaseUrl());
-                executeCallbacks(DataType.NPC);
+                if (epoch == loadEpoch)
+                {
+                    executeCallbacks(DataType.NPC);
+                }
             }
 
             @Override
@@ -943,11 +1022,17 @@ public class DataFinder
                     Type listType = new TypeToken<List<NPCData>>() {}.getType();
                     List<NPCData> list = gson.fromJson(reader, listType);
 
-                    npcData.addAll(list);
-                    npcData.sort(Comparator.comparing(NPCData::getName));
+                    if (epoch == loadEpoch)
+                    {
+                        npcData.addAll(list);
+                        npcData.sort(Comparator.comparing(NPCData::getName));
+                    }
                     response.body().close();
                 }
-                executeCallbacks(DataType.NPC);
+                if (epoch == loadEpoch)
+                {
+                    executeCallbacks(DataType.NPC);
+                }
             }
         });
     }
@@ -1153,6 +1238,7 @@ public class DataFinder
 
     private void lookupObjectData()
     {
+        final int epoch = loadEpoch;
         Request request = new Request.Builder().url(config.configBaseUrl() + "object_defs.json").build();
         Call call = httpClient.newCall(request);
         call.enqueue(new Callback()
@@ -1161,7 +1247,10 @@ public class DataFinder
             public void onFailure(Call call, IOException e)
             {
                 log.debug("Failed to access URL: {}object_defs.json", config.configBaseUrl());
-                executeCallbacks(DataType.OBJECT);
+                if (epoch == loadEpoch)
+                {
+                    executeCallbacks(DataType.OBJECT);
+                }
             }
 
             @Override
@@ -1175,11 +1264,17 @@ public class DataFinder
                     Type listType = new TypeToken<List<ObjectData>>() {}.getType();
                     List<ObjectData> list = gson.fromJson(reader, listType);
 
-                    objectData.addAll(list);
-                    objectData.sort(Comparator.comparing(ObjectData::getName));
+                    if (epoch == loadEpoch)
+                    {
+                        objectData.addAll(list);
+                        objectData.sort(Comparator.comparing(ObjectData::getName));
+                    }
                     response.body().close();
                 }
-                executeCallbacks(DataType.OBJECT);
+                if (epoch == loadEpoch)
+                {
+                    executeCallbacks(DataType.OBJECT);
+                }
             }
         });
     }
@@ -1312,6 +1407,7 @@ public class DataFinder
 
     private void lookupItemData()
     {
+        final int epoch = loadEpoch;
         CountDownLatch countDownLatch = new CountDownLatch(1);
         Request itemRequest = new Request.Builder()
                 .url(config.configBaseUrl() + "item_defs.json")
@@ -1323,7 +1419,10 @@ public class DataFinder
             {
                 log.debug("Failed to access URL: {}item_defs.json", config.configBaseUrl());
                 countDownLatch.countDown();
-                executeCallbacks(DataType.ITEM);
+                if (epoch == loadEpoch)
+                {
+                    executeCallbacks(DataType.ITEM);
+                }
             }
 
             @Override
@@ -1334,12 +1433,18 @@ public class DataFinder
                     InputStreamReader reader = new InputStreamReader(response.body().byteStream());
                     Type listType = new TypeToken<List<ItemData>>() {}.getType();
                     List<ItemData> list = gson.fromJson(reader, listType);
-                    itemData.addAll(list);
-                    itemData.sort(Comparator.comparing(ItemData::getName));
+                    if (epoch == loadEpoch)
+                    {
+                        itemData.addAll(list);
+                        itemData.sort(Comparator.comparing(ItemData::getName));
+                    }
 
                     response.body().close();
                 }
-                executeCallbacks(DataType.ITEM);
+                if (epoch == loadEpoch)
+                {
+                    executeCallbacks(DataType.ITEM);
+                }
             }
         });
     }
@@ -1494,6 +1599,7 @@ public class DataFinder
 
     private void lookupWeaponAnimationData()
     {
+        final int epoch = loadEpoch;
         Request request = new Request.Builder().url("https://raw.githubusercontent.com/ScreteMonge/cache-converter/refs/heads/master/.venv/weapon_animations.json").build();
         Call call = httpClient.newCall(request);
         call.enqueue(new Callback()
@@ -1502,7 +1608,10 @@ public class DataFinder
             public void onFailure(Call call, IOException e)
             {
                 log.debug("Failed to access URL: https://raw.githubusercontent.com/ScreteMonge/cache-converter/refs/heads/master/.venv/weapon_animations.json");
-                executeCallbacks(DataType.WEAPON_ANIM);
+                if (epoch == loadEpoch)
+                {
+                    executeCallbacks(DataType.WEAPON_ANIM);
+                }
             }
 
             @Override
@@ -1516,10 +1625,16 @@ public class DataFinder
                     Type listType = new TypeToken<List<WeaponAnimData>>() {}.getType();
                     List<WeaponAnimData> list = gson.fromJson(reader, listType);
 
-                    weaponAnimData.addAll(list);
+                    if (epoch == loadEpoch)
+                    {
+                        weaponAnimData.addAll(list);
+                    }
                     response.body().close();
                 }
-                executeCallbacks(DataType.WEAPON_ANIM);
+                if (epoch == loadEpoch)
+                {
+                    executeCallbacks(DataType.WEAPON_ANIM);
+                }
             }
         });
     }
@@ -1548,6 +1663,7 @@ public class DataFinder
 
     private void lookupSoundData()
     {
+        final int epoch = loadEpoch;
         Request request = new Request.Builder().url("https://raw.githubusercontent.com/ScreteMonge/cache-converter/refs/heads/master/.venv/sounds.json").build();
         Call call = httpClient.newCall(request);
         call.enqueue(new Callback()
@@ -1556,7 +1672,10 @@ public class DataFinder
             public void onFailure(Call call, IOException e)
             {
                 log.debug("Failed to access URL: https://raw.githubusercontent.com/ScreteMonge/cache-converter/refs/heads/master/.venv/sounds.json");
-                executeCallbacks(DataType.SOUND);
+                if (epoch == loadEpoch)
+                {
+                    executeCallbacks(DataType.SOUND);
+                }
             }
 
             @Override
@@ -1570,10 +1689,16 @@ public class DataFinder
                     Type listType = new TypeToken<List<SoundData>>() {}.getType();
                     List<SoundData> list = gson.fromJson(reader, listType);
 
-                    soundData.addAll(list);
+                    if (epoch == loadEpoch)
+                    {
+                        soundData.addAll(list);
+                    }
                     response.body().close();
                 }
-                executeCallbacks(DataType.SOUND);
+                if (epoch == loadEpoch)
+                {
+                    executeCallbacks(DataType.SOUND);
+                }
             }
         });
     }
