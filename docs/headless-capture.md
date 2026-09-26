@@ -31,8 +31,14 @@ unaffected.
 | `ck.capture.cropViewport` | `false` | Crop frames to the 3D viewport |
 | `ck.capture.stageOnPlayer` | `true` | Re-base spawn tiles around the local player (waits for its tile to settle first) |
 | `ck.capture.stageOffset` | `2,0` | Extra tile offset applied when staging |
+| `ck.capture.aimCamera` | `true` | Face the staged actors from the player before each frame |
+| `ck.capture.pitch` | `335` | Camera pitch applied by the aim override |
+| `ck.capture.zoom` | unset | Camera zoom applied by the aim override (higher = closer); unset leaves it alone |
 | `ck.capture.settleMs` | `500` | Settle delay after each seek, ms |
 | `ck.capture.drawTimeoutSec` | `30` | Per-frame completed-draw timeout, s |
+
+Capture also parks the mouse off the canvas (no hover text in frames)
+and stops the GPU and beginner-tooltip plugins for a clean scene.
 
 Scene seconds convert to kit ticks at 0.6 s per tick. A 5 s range at 30 fps
 yields 150 frames named `frame_%05d.png`.
@@ -101,3 +107,16 @@ Drop a `<name>.request.json` file into the request directory:
 Use `"times": [0.0, 2.5]` instead of `start`/`end` for stills. Processed
 requests move to `handled/`. Each request resolves, reloads, and captures
 in the same JVM. Drop a file named `stop` in the directory to end the loop.
+
+Per-request framing keys (`stageOffset`, `aimCamera`, `pitch`, `zoom`)
+override the matching `ck.capture.*` properties for that job only, so one
+daemon can shoot different framings without a restart.
+
+## Known limitations
+
+- Instance staging is not supported: scenes must play in the main world
+  with the bot on a plain tile. Inside an instance, template-based spawn
+  tiles resolve in-scene but their models never draw, and literal instance
+  tiles are rejected by the kit's placement (`inScene=false`). The run
+  logs per-actor `object/model/active/inScene` health plus the camera
+  pose to make this visible.
