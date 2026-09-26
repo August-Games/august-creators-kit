@@ -838,8 +838,6 @@ public class HeadlessCapturePlugin extends Plugin
 				{
 					boolean hasObject = ch.getCkObject() != null;
 					boolean hasModel = hasObject && ch.getCkObject().getModel() != null;
-					boolean hasObject = ch.getCkObject() != null;
-					boolean hasModel = hasObject && ch.getCkObject().getModel() != null;
 					boolean active = hasObject && ch.getCkObject().isActive();
 					ref.get().add(ch.getName()
 						+ " object=" + hasObject
