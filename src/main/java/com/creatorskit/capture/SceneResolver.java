@@ -214,6 +214,81 @@ public final class SceneResolver
 	}
 
 	/**
+	 * Ident-kit wearpos slots (HEAD, JAW, TORSO, ARMS, HANDS, LEGS, FEET).
+	 * A kit renders only when its wearpos holds no worn item and no worn
+	 * item hides it. Mirrors the in-game player-appearance composition,
+	 * which drops kits from the worn (id, wearPos2, wearPos3) triples:
+	 * e.g. a full helm hides the hair and jaw kits, a platebody hides
+	 * the arms kit. Without this, base body kits render straight through
+	 * covering equipment.
+	 */
+	public static final int[] IDENT_KIT_WEARPOS = {8, 11, 4, 6, 9, 7, 10};
+
+	/**
+	 * Wearpos hidden by worn items' secondary/tertiary cover, from each
+	 * worn equipment index's {wearPos1, wearPos2, wearPos3} triple (read
+	 * from the cache item definitions).
+	 * Pure so it stays unit-testable.
+	 *
+	 * @param wearposBySlot equipment index to {wearPos1, wearPos2, wearPos3}
+	 * @param size equipment slot count (wearpos outside [0, size) are ignored)
+	 */
+	public static boolean[] computeHiddenWearpos(Map<Integer, int[]> wearposBySlot, int size)
+	{
+		boolean[] hidden = new boolean[Math.max(0, size)];
+		if (wearposBySlot == null)
+		{
+			return hidden;
+		}
+		for (int[] triple : wearposBySlot.values())
+		{
+			if (triple == null || triple.length < 3)
+			{
+				continue;
+			}
+			for (int k = 1; k <= 2; k++)
+			{
+				int w = triple[k];
+				if (w >= 0 && w < hidden.length)
+				{
+					hidden[w] = true;
+				}
+			}
+		}
+		return hidden;
+	}
+
+	/**
+	 * Drops identity kits covered by worn items, in place: a kit is dropped
+	 * when its wearpos is hidden (see {@link #computeHiddenWearpos}) or
+	 * occupied by a worn item (e.g. a platebody replaces the torso kit).
+	 * Only the seven ident-kit wearpos are touched; weapon/shield/head
+	 * slots keep their current behaviour.
+	 *
+	 * @param kitShortList kit id per equipment index (-1 = none), mutated
+	 * @param itemShortList worn item id per equipment index (-1 = none)
+	 * @param hidden hidden wearpos from {@link #computeHiddenWearpos}
+	 */
+	public static void dropCoveredKits(int[] kitShortList, int[] itemShortList, boolean[] hidden)
+	{
+		if (kitShortList == null || itemShortList == null || hidden == null)
+		{
+			return;
+		}
+		for (int w : IDENT_KIT_WEARPOS)
+		{
+			if (w < 0 || w >= kitShortList.length || w >= itemShortList.length || w >= hidden.length)
+			{
+				continue;
+			}
+			if (hidden[w] || itemShortList[w] != -1)
+			{
+				kitShortList[w] = -1;
+			}
+		}
+	}
+
+	/**
 	 * Re-bases one authored tile onto the player in a shared coordinate
 	 * space (template space inside instances, plain tiles otherwise):
 	 * {@code player + (authored - anchor) + (dx, dy, dz)}. All three inputs

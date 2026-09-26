@@ -1,6 +1,7 @@
 package com.creatorskit.models;
 
 import com.creatorskit.CreatorsConfig;
+import com.creatorskit.capture.SceneResolver;
 import com.creatorskit.models.dataloaders.*;
 import com.creatorskit.models.datatypes.*;
 import com.google.gson.Gson;
@@ -302,6 +303,12 @@ public class DataFinder
             removePlayerItems(animSequence, leftHandItem, rightHandItem);
         }
 
+        // Identity kits covered by worn items must not render: a worn item
+        // replaces the kit at its own wearpos and hides the kits named by
+        // its wearPos2/wearPos3 (full helm hides hair+jaw, platebody hides
+        // arms), exactly like the in-game appearance composition.
+        dropKitsCoveredByItems(itemShortList, kitShortList);
+
         //for ItemIds
         ArrayList<ModelStats> itemArray = new ArrayList<>();
         getPlayerItems(itemArray, groundItem, maleItem, itemShortList, animSequence);
@@ -335,6 +342,52 @@ public class DataFinder
         }
 
         return orderedItems.toArray(new ModelStats[0]);
+    }
+
+    /**
+     * Reads an item's {wearPos1, wearPos2, wearPos3} cover triple from the
+     * loaded cache item database, or null when the id is unknown. Reads a
+     * snapshot so a concurrent catalog reload cannot fail the scan partway.
+     */
+    private int[] wearposTriple(int itemId)
+    {
+        ItemDefinition[] snapshot = itemData.toArray(new ItemDefinition[0]);
+        for (ItemDefinition def : snapshot)
+        {
+            if (def != null && def.getId() == itemId)
+            {
+                return new int[]{def.getWearPos1(), def.getWearPos2(), def.getWearPos3()};
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Drops identity kits covered by the worn items (see
+     * SceneResolver#dropCoveredKits). Unknown item ids contribute no cover;
+     * they are reported separately by the resolve gate.
+     */
+    private void dropKitsCoveredByItems(int[] itemShortList, int[] kitShortList)
+    {
+        if (itemShortList == null || kitShortList == null)
+        {
+            return;
+        }
+        Map<Integer, int[]> wearposBySlot = new HashMap<>();
+        for (int i = 0; i < itemShortList.length; i++)
+        {
+            if (itemShortList[i] == -1)
+            {
+                continue;
+            }
+            int[] triple = wearposTriple(itemShortList[i]);
+            if (triple != null)
+            {
+                wearposBySlot.put(i, triple);
+            }
+        }
+        boolean[] hidden = SceneResolver.computeHiddenWearpos(wearposBySlot, itemShortList.length);
+        SceneResolver.dropCoveredKits(kitShortList, itemShortList, hidden);
     }
 
     public void removePlayerItems(AnimSequence animSequence, int leftHandItem, int rightHandItem)
@@ -505,14 +558,15 @@ public class DataFinder
                         name = DEFAULT_NAME;
                     }
 
-                    for (int id : modelIds)
+                    for (int m = 0; m < modelIds.length; m++)
                     {
+                        int id = modelIds[m];
                         if (id != -1)
                         {
                             modelStats.add(new ModelStats(
                                     id,
                                     name,
-                                    bodyParts[i],
+                                    wornModelPart(itemDatum, m, bodyParts[i]),
                                     rf,
                                     rt,
                                     rtFrom,
@@ -530,6 +584,36 @@ public class DataFinder
                 }
             }
         }
+    }
+
+    /**
+     * Body part for one worn model of an item: the part named by that
+     * model's wearpos (wearPos1 for model0, wearPos2 for model1, wearPos3
+     * for model2), falling back to the equipment slot's part when the item
+     * names none. A platebody's arm mesh therefore lands on ARMS instead of
+     * TORSO, where the kit-drop above already removed the base arms kit.
+     * Same convention as the MAN_WEAR path of findModelsForGroundItem.
+     */
+    private static BodyPart wornModelPart(ItemDefinition def, int modelIndex, BodyPart slotPart)
+    {
+        int wearPos = -1;
+        if (def != null)
+        {
+            switch (modelIndex)
+            {
+                case 0:
+                    wearPos = def.getWearPos1();
+                    break;
+                case 1:
+                    wearPos = def.getWearPos2();
+                    break;
+                default:
+                    wearPos = def.getWearPos3();
+                    break;
+            }
+        }
+        BodyPart part = BodyPart.wearPosToBodyPart(wearPos);
+        return part == BodyPart.NA ? slotPart : part;
     }
 
     public void getPlayerKit(ArrayList<ModelStats> modelStats, int[] kitId)
@@ -896,6 +980,24 @@ public class DataFinder
             if (npcData.getId() == npc.getId())
             {
                 return npcData;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * NPC definition by id, or null when unknown. Reads a snapshot so a
+     * concurrent catalog reload cannot fail the scan partway.
+     */
+    public NpcDefinition findNpcDefinition(int npcId)
+    {
+        NpcDefinition[] snapshot = npcData.toArray(new NpcDefinition[0]);
+        for (NpcDefinition def : snapshot)
+        {
+            if (def != null && def.getId() == npcId)
+            {
+                return def;
             }
         }
 

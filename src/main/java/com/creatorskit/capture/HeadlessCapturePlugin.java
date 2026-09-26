@@ -5,8 +5,10 @@ import com.creatorskit.models.CustomModelComp;
 import com.creatorskit.models.CustomModelType;
 import com.creatorskit.models.DataFinder;
 import com.creatorskit.models.ModelStats;
+import com.creatorskit.models.datatypes.NpcDefinition;
 import com.creatorskit.saves.CharacterSave;
 import com.creatorskit.saves.SetupSave;
+import com.creatorskit.swing.timesheet.keyframe.subtypes.AnimationKeyFrame;
 import com.google.inject.Inject;
 import java.awt.Image;
 import java.awt.image.BufferedImage;
@@ -375,6 +377,7 @@ public class HeadlessCapturePlugin extends Plugin
 			// Best-effort resolution first; the gate below examines EVERY comp
 			// (requested or not), so geometry-less comps can never slip through.
 			resolveComps(save);
+			defaultNpcIdlePoses(save);
 			List<String> blockers = new ArrayList<>();
 			CustomModelComp[] comps = save.getComps();
 			if (comps != null)
@@ -554,6 +557,145 @@ public class HeadlessCapturePlugin extends Plugin
 		File f = new File(scenePath);
 		String json = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
 		return creators.getGson().fromJson(json, SetupSave.class);
+	}
+
+	/**
+	 * Gives every NPC character its definition's stand/walk/run pose set:
+	 * without it the pose channel is empty wherever no action anim plays
+	 * (before the first action keyframe, between actions, or for actors
+	 * with no action at all) and the character renders the bind pose
+	 * (T-pose). Only fills pose slots the scene left at -1, and ensures a
+	 * tick-0 pose keyframe exists so ticks before the first authored
+	 * action are covered too. Authored action (active) animations are
+	 * never touched.
+	 */
+	private void defaultNpcIdlePoses(SetupSave save)
+	{
+		CustomModelComp[] comps = save.getComps();
+		if (comps == null)
+		{
+			return;
+		}
+		DataFinder dataFinder = creators.getDataFinder();
+		if (dataFinder == null)
+		{
+			return;
+		}
+		for (CharacterSave ch : SceneResolver.allCharacterSaves(save))
+		{
+			if (ch == null || ch.getCompId() < 0 || ch.getCompId() >= comps.length)
+			{
+				continue;
+			}
+			CustomModelComp comp = comps[ch.getCompId()];
+			if (comp == null || comp.getType() != CustomModelType.CACHE_NPC || comp.getNpcId() == null)
+			{
+				continue;
+			}
+			NpcDefinition def = dataFinder.findNpcDefinition(comp.getNpcId());
+			if (def == null || def.getStandingAnimation() == -1)
+			{
+				continue;
+			}
+			AnimationKeyFrame[] kfs = ch.getAnimationKeyFrames();
+			if (kfs == null || kfs.length == 0)
+			{
+				ch.setAnimationKeyFrames(new AnimationKeyFrame[]{
+					npcPoseKeyFrame(0.0, def)});
+				log.warn("Headless capture defaulted {} to stand anim {}",
+					ch.getName(), def.getStandingAnimation());
+				continue;
+			}
+			boolean patched = false;
+			double earliest = Double.MAX_VALUE;
+			for (AnimationKeyFrame kf : kfs)
+			{
+				if (kf == null)
+				{
+					continue;
+				}
+				earliest = Math.min(earliest, kf.getTick());
+				patched |= fillNpcPoseSlot(kf, def);
+			}
+			if (earliest > 0.0)
+			{
+				AnimationKeyFrame[] grown = new AnimationKeyFrame[kfs.length + 1];
+				grown[0] = npcPoseKeyFrame(0.0, def);
+				System.arraycopy(kfs, 0, grown, 1, kfs.length);
+				ch.setAnimationKeyFrames(grown);
+				patched = true;
+			}
+			if (patched)
+			{
+				log.warn("Headless capture defaulted {} to stand anim {}",
+					ch.getName(), def.getStandingAnimation());
+			}
+		}
+	}
+
+	/** Pose-only keyframe (no action): the NPC's definition anim set. */
+	private static AnimationKeyFrame npcPoseKeyFrame(double tick, NpcDefinition def)
+	{
+		return new AnimationKeyFrame(
+			tick, false, -1, 0, false, false,
+			def.getStandingAnimation(),
+			def.getWalkingAnimation(),
+			def.getRunAnimation(),
+			def.getRotate180Animation(),
+			def.getRotateRightAnimation(),
+			def.getRotateLeftAnimation(),
+			def.getIdleRotateRightAnimation(),
+			def.getIdleRotateLeftAnimation());
+	}
+
+	/**
+	 * Fills pose slots the scene left at -1 from the NPC definition.
+	 * Returns true when anything changed.
+	 */
+	private static boolean fillNpcPoseSlot(AnimationKeyFrame kf, NpcDefinition def)
+	{
+		boolean changed = false;
+		if (kf.getIdle() == -1 && def.getStandingAnimation() != -1)
+		{
+			kf.setIdle(def.getStandingAnimation());
+			changed = true;
+		}
+		if (kf.getWalk() == -1 && def.getWalkingAnimation() != -1)
+		{
+			kf.setWalk(def.getWalkingAnimation());
+			changed = true;
+		}
+		if (kf.getRun() == -1 && def.getRunAnimation() != -1)
+		{
+			kf.setRun(def.getRunAnimation());
+			changed = true;
+		}
+		if (kf.getWalk180() == -1 && def.getRotate180Animation() != -1)
+		{
+			kf.setWalk180(def.getRotate180Animation());
+			changed = true;
+		}
+		if (kf.getWalkRight() == -1 && def.getRotateRightAnimation() != -1)
+		{
+			kf.setWalkRight(def.getRotateRightAnimation());
+			changed = true;
+		}
+		if (kf.getWalkLeft() == -1 && def.getRotateLeftAnimation() != -1)
+		{
+			kf.setWalkLeft(def.getRotateLeftAnimation());
+			changed = true;
+		}
+		if (kf.getIdleRight() == -1 && def.getIdleRotateRightAnimation() != -1)
+		{
+			kf.setIdleRight(def.getIdleRotateRightAnimation());
+			changed = true;
+		}
+		if (kf.getIdleLeft() == -1 && def.getIdleRotateLeftAnimation() != -1)
+		{
+			kf.setIdleLeft(def.getIdleRotateLeftAnimation());
+			changed = true;
+		}
+		return changed;
 	}
 
 	/**

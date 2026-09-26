@@ -268,4 +268,112 @@ public class SceneResolverTest
 		new java.io.File(dir, "ERROR").delete();
 		dir.delete();
 	}
+
+	private static int[] kits(int head, int jaw, int torso, int arms, int hands, int legs, int feet)
+	{
+		// identity-kit wearpos: HEAD=8, JAW=11, TORSO=4, ARMS=6, HANDS=9, LEGS=7, FEET=10
+		int[] kitShortList = new int[12];
+		java.util.Arrays.fill(kitShortList, -1);
+		kitShortList[8] = head;
+		kitShortList[11] = jaw;
+		kitShortList[4] = torso;
+		kitShortList[6] = arms;
+		kitShortList[9] = hands;
+		kitShortList[7] = legs;
+		kitShortList[10] = feet;
+		return kitShortList;
+	}
+
+	private static int[] worn(int[][] at)
+	{
+		int[] itemShortList = new int[12];
+		java.util.Arrays.fill(itemShortList, -1);
+		for (int[] pair : at)
+		{
+			itemShortList[pair[0]] = pair[1];
+		}
+		return itemShortList;
+	}
+
+	@Test
+	public void fullHelmHidesHairAndJawKits()
+	{
+		// full helm at HEAD (wearpos 0) covering HAIR (8) and JAW (11)
+		Map<Integer, int[]> cover = new HashMap<>();
+		cover.put(0, new int[]{0, 8, 11});
+		boolean[] hidden = SceneResolver.computeHiddenWearpos(cover, 12);
+		assertTrue(hidden[8]);
+		assertTrue(hidden[11]);
+		assertFalse(hidden[0]);
+		assertFalse(hidden[4]);
+		assertFalse(hidden[6]);
+
+		int[] kitShortList = kits(1, 2, 3, 4, 5, 6, 7);
+		SceneResolver.dropCoveredKits(kitShortList, worn(new int[][]{{0, 1163}}), hidden);
+		assertEquals(-1, kitShortList[8]);
+		assertEquals(-1, kitShortList[11]);
+		assertEquals(3, kitShortList[4]);
+		assertEquals(4, kitShortList[6]);
+		assertEquals(5, kitShortList[9]);
+		assertEquals(6, kitShortList[7]);
+		assertEquals(7, kitShortList[10]);
+	}
+
+	@Test
+	public void platebodyHidesArmsAndReplacesTorso()
+	{
+		// platebody at TORSO (wearpos 4) covering ARMS (6)
+		Map<Integer, int[]> cover = new HashMap<>();
+		cover.put(4, new int[]{4, 6, -1});
+		boolean[] hidden = SceneResolver.computeHiddenWearpos(cover, 12);
+		assertTrue(hidden[6]);
+		assertFalse(hidden[4]);
+
+		int[] kitShortList = kits(1, 2, 3, 4, 5, 6, 7);
+		// worn platebody occupies wearpos 4, so the torso kit drops as replaced
+		SceneResolver.dropCoveredKits(kitShortList, worn(new int[][]{{4, 1127}}), hidden);
+		assertEquals(1, kitShortList[8]);
+		assertEquals(2, kitShortList[11]);
+		assertEquals(-1, kitShortList[4]);
+		assertEquals(-1, kitShortList[6]);
+		assertEquals(5, kitShortList[9]);
+		assertEquals(6, kitShortList[7]);
+		assertEquals(7, kitShortList[10]);
+	}
+
+	@Test
+	public void nakedBaseKeepsEveryKit()
+	{
+		boolean[] hidden = SceneResolver.computeHiddenWearpos(new HashMap<>(), 12);
+		int[] kitShortList = kits(1, 2, 3, 4, 5, 6, 7);
+		SceneResolver.dropCoveredKits(kitShortList, worn(new int[][]{}), hidden);
+		assertEquals(1, kitShortList[8]);
+		assertEquals(2, kitShortList[11]);
+		assertEquals(3, kitShortList[4]);
+		assertEquals(4, kitShortList[6]);
+		assertEquals(5, kitShortList[9]);
+		assertEquals(6, kitShortList[7]);
+		assertEquals(7, kitShortList[10]);
+	}
+
+	@Test
+	public void coverComputationIsDefensive()
+	{
+		Map<Integer, int[]> cover = new HashMap<>();
+		cover.put(0, new int[]{0, 99, -5});
+		cover.put(1, null);
+		cover.put(2, new int[]{4});
+		boolean[] hidden = SceneResolver.computeHiddenWearpos(cover, 12);
+		for (boolean b : hidden)
+		{
+			assertFalse(b);
+		}
+		assertEquals(12, SceneResolver.computeHiddenWearpos(null, 12).length);
+		// null inputs never throw
+		SceneResolver.dropCoveredKits(null, worn(new int[][]{}), hidden);
+		SceneResolver.dropCoveredKits(kits(1, 2, 3, 4, 5, 6, 7), null, hidden);
+		SceneResolver.dropCoveredKits(kits(1, 2, 3, 4, 5, 6, 7), worn(new int[][]{}), null);
+		// short arrays never throw
+		SceneResolver.dropCoveredKits(new int[3], new int[3], new boolean[3]);
+	}
 }
