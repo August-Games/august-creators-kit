@@ -25,7 +25,9 @@ import javax.swing.SwingUtilities;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.PlayerComposition;
+import net.runelite.api.ScriptID;
 import net.runelite.api.coords.WorldPoint;
+import net.runelite.api.gameval.VarClientID;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.eventbus.Subscribe;
@@ -186,6 +188,12 @@ public class HeadlessCapturePlugin extends Plugin
 			Object crop = map.get("cropViewport");
 			props.setProperty("ck.capture.cropViewport",
 				crop == null ? Boolean.toString(daemon.cropViewport) : crop.toString());
+			// Per-request capture tuning (applied as live system properties
+			// so each daemon job can frame differently without restarting).
+			setLiveIfPresent("ck.capture.stageOffset", map.get("stageOffset"));
+			setLiveIfPresent("ck.capture.aimCamera", map.get("aimCamera"));
+			setLiveIfPresent("ck.capture.pitch", map.get("pitch"));
+			setLiveIfPresent("ck.capture.zoom", map.get("zoom"));
 			CaptureOptions job = CaptureOptions.fromProperties(props);
 			int code = runJob(job.scene, job.out, job, null);
 			writeSentinel(new File(job.out), base, code == 0, code == 0 ? "ok" : "job failed");
@@ -207,6 +215,14 @@ public class HeadlessCapturePlugin extends Plugin
 			{
 				log.error("Headless capture could not archive {}", req.getName(), e);
 			}
+		}
+	}
+
+	private static void setLiveIfPresent(String key, Object v)
+	{
+		if (v != null)
+		{
+			System.setProperty(key, v.toString());
 		}
 	}
 
@@ -801,7 +817,9 @@ public class HeadlessCapturePlugin extends Plugin
 				ref.get().add("camera xyz=" + client.getCameraX()
 					+ "/" + client.getCameraY() + "/" + client.getCameraZ()
 					+ " yaw=" + client.getCameraYaw()
-					+ " pitch=" + client.getCameraPitch());
+					+ " pitch=" + client.getCameraPitch()
+					+ " zoomVar=" + client.getVarcIntValue(
+						VarClientID.CAMERA_ZOOM_SMALL));
 				if (client.getLocalPlayer() != null)
 				{
 					ref.get().add("player tile="
@@ -1010,8 +1028,13 @@ public class HeadlessCapturePlugin extends Plugin
 				int yaw = (int) (Math.atan2(dx, dy) * 325.94932345220167) & 0x7FF;
 				client.setCameraYawTarget(yaw);
 				client.setCameraPitchTarget(pitch);
-				log.warn("Headless capture camera aim: yaw={} actors at +{}/{}",
-					yaw, dx, dy);
+				int zoom = Integer.getInteger("ck.capture.zoom", -1);
+				if (zoom > 0)
+				{
+					client.runScript(ScriptID.CAMERA_DO_ZOOM, zoom, zoom);
+				}
+				log.warn("Headless capture camera aim: yaw={} pitch={} zoom={} actors at +{}/{}",
+					yaw, pitch, zoom, dx, dy);
 			}
 			finally
 			{
