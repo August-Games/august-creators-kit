@@ -1065,7 +1065,7 @@ public class HeadlessCapturePlugin extends Plugin
 
 	private void dumpWidget(net.runelite.api.widgets.Widget w, int depth)
 	{
-		if (w == null || depth > 3)
+		if (w == null || depth > 7)
 		{
 			return;
 		}
@@ -1086,7 +1086,19 @@ public class HeadlessCapturePlugin extends Plugin
 				id >>> 16, id & 0xFFFF, b.x, b.y, b.width, b.height,
 				w.isHidden(), text.replace('\n', '|'), w.getName());
 		}
-		net.runelite.api.widgets.Widget[] kids = w.getChildren();
+		dumpWidgetKids(w.getChildren(), depth);
+		try
+		{
+			dumpWidgetKids(w.getNestedChildren(), depth);
+		}
+		catch (Exception e)
+		{
+			// older shapes without nested children
+		}
+	}
+
+	private void dumpWidgetKids(net.runelite.api.widgets.Widget[] kids, int depth)
+	{
 		if (kids != null)
 		{
 			for (net.runelite.api.widgets.Widget k : kids)
