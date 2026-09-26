@@ -297,7 +297,8 @@ public class HeadlessCapturePlugin extends Plugin
 
 			resetScene();
 			loadSceneFile(resolved);
-			disableGpuForCpuCapture();
+			parkMouseOffCanvas();
+			quietClientForCapture();
 
 			List<String> spawned = spawnedCharacterNames();
 			log.warn("Headless capture spawned {} characters: {}",
@@ -845,26 +846,46 @@ public class HeadlessCapturePlugin extends Plugin
 	}
 
 	/**
-	 * With the hardware-accelerated path the completed-draw image handed to
-	 * frame listeners is empty, so capture runs on the CPU path.
+	 * Park the pointer off the canvas so hover/menu text never leaks into
+	 * frames. Best effort: a missing pointer device must not fail the run.
 	 */
-	private void disableGpuForCpuCapture() throws Exception
+	private void parkMouseOffCanvas()
+	{
+		try
+		{
+			new java.awt.Robot().mouseMove(2, 2);
+			log.warn("Headless capture parked mouse off canvas");
+		}
+		catch (Exception e)
+		{
+			log.warn("Headless capture could not park mouse: {}", e.toString());
+		}
+	}
+
+	/**
+	 * With the hardware-accelerated path the completed-draw image handed to
+	 * frame listeners is empty, so capture runs on the CPU path. Overlay
+	 * plugins that draw helper text (e.g. beginner tooltips) are stopped so
+	 * frames contain only the scene.
+	 */
+	private void quietClientForCapture() throws Exception
 	{
 		SwingUtilities.invokeAndWait(() ->
 		{
 			for (Plugin p : pluginManager.getPlugins())
 			{
-				if (p.getClass().getSimpleName().equals("GpuPlugin"))
+				String name = p.getClass().getSimpleName();
+				if (name.equals("GpuPlugin") || name.equals("BeginnerTooltipsPlugin"))
 				{
 					try
 					{
 						pluginManager.setPluginEnabled(p, false);
 						pluginManager.stopPlugin(p);
-						log.warn("Headless capture stopped GPU plugin for CPU capture");
+						log.warn("Headless capture stopped {} for clean capture", name);
 					}
 					catch (Exception e)
 					{
-						log.error("Headless capture GPU stop failed", e);
+						log.error("Headless capture stop of {} failed", name, e);
 					}
 				}
 			}
@@ -952,7 +973,7 @@ public class HeadlessCapturePlugin extends Plugin
 		{
 			return;
 		}
-		int pitch = Integer.getInteger("ck.capture.pitch", 300);
+		int pitch = Integer.getInteger("ck.capture.pitch", 335);
 		CountDownLatch latch = new CountDownLatch(1);
 		clientThread.invokeLater(() ->
 		{
