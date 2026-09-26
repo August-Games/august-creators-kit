@@ -7,16 +7,20 @@ import com.creatorskit.swing.ToolBoxFrame;
 import com.creatorskit.swing.manager.ManagerTree;
 import com.creatorskit.swing.timesheet.AttributePanel;
 import com.creatorskit.swing.timesheet.keyframe.*;
+import com.creatorskit.swing.timesheet.keyframe.keyframeselectionmanager.KeyFrameSelectionManager;
+import com.creatorskit.swing.timesheet.keyframe.subtypes.*;
 import lombok.Getter;
 import lombok.Setter;
 import net.runelite.client.ui.ColorScheme;
 import net.runelite.client.ui.FontManager;
 
 import javax.swing.*;
+import javax.swing.border.EmptyBorder;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.TreePath;
 import java.awt.*;
 import java.util.ArrayList;
+import java.util.Enumeration;
 
 @Getter
 @Setter
@@ -25,15 +29,16 @@ public class SummarySheet extends TimeSheet
     private ManagerTree tree;
     private CreatorsConfig config;
     private AttributePanel attributePanel;
+    private KeyFrameSelectionManager kfsm;
     private JPopupMenu popupMenu;
     private Character rightClickedCharacter;
     private JLabel popupTitle;
     private JMenu[] menuItems;
     private final int FONT_SPACER = 9;
 
-    public SummarySheet(ToolBoxFrame toolBox, CreatorsConfig config, ManagerTree tree, AttributePanel attributePanel)
+    public SummarySheet(ToolBoxFrame toolBox, CreatorsConfig config, ManagerTree tree, AttributePanel attributePanel, KeyFrameSelectionManager kfsm)
     {
-        super(toolBox, config, tree, attributePanel);
+        super(toolBox, config, tree, attributePanel, kfsm);
         this.tree = tree;
         this.attributePanel = attributePanel;
 
@@ -44,8 +49,10 @@ public class SummarySheet extends TimeSheet
     {
         popupMenu = new JPopupMenu();
         popupTitle = new JLabel("");
+        popupTitle.setBorder(new EmptyBorder(2, 6, 2, 6));
         popupTitle.setFont(FontManager.getRunescapeBoldFont());
         popupMenu.add(popupTitle);
+        popupMenu.addSeparator();
 
         menuItems = new JMenu[]
                 {
@@ -122,6 +129,48 @@ public class SummarySheet extends TimeSheet
     }
 
     @Override
+    public void draw3DPreview(Graphics g)
+    {
+
+    }
+
+    @Override
+    public void drawRowLabels(Graphics g)
+    {
+        g.setFont(FontManager.getRunescapeFont());
+        g.setColor(ColorScheme.LIGHT_GRAY_COLOR);
+
+        FontMetrics fontMetrics = g.getFontMetrics();
+        int textHeight = fontMetrics.getHeight();
+        int x = 5;
+
+        int index = -2;
+        Enumeration<?> e = tree.getRootNode().preorderEnumeration();
+        while (e.hasMoreElements())
+        {
+            index++;
+            DefaultMutableTreeNode node = (DefaultMutableTreeNode) e.nextElement();
+            if (node.getUserObject() instanceof Folder)
+            {
+                continue;
+            }
+
+            TreePath path = new TreePath(node.getPath());
+
+            if (!tree.isVisible(path))
+            {
+                index--;
+                continue;
+            }
+
+            Character character = (Character) node.getUserObject();
+
+            int y = index * rowHeight - getVScroll() + rowHeight - textHeight / 2;
+            g.drawString(character.getName(), x, y);
+        }
+    }
+
+    @Override
     public void drawKeyFrames(Graphics g)
     {
         ArrayList<DefaultMutableTreeNode> nodes = new ArrayList<>();
@@ -130,20 +179,22 @@ public class SummarySheet extends TimeSheet
         int index = -2;
 
         g.setFont(FontManager.getRunescapeSmallFont());
-        g.setColor(ColorScheme.BRAND_ORANGE);
 
-        for (DefaultMutableTreeNode node : nodes)
+        Enumeration<?> e = tree.getRootNode().preorderEnumeration();
+        while (e.hasMoreElements())
         {
             index++;
-
-            TreePath path = tree.getPathForRow(index);
-            if (path == null)
+            DefaultMutableTreeNode node = (DefaultMutableTreeNode) e.nextElement();
+            if (node.getUserObject() instanceof Folder)
             {
                 continue;
             }
 
-            if (node.getUserObject() instanceof Folder)
+            TreePath path = new TreePath(node.getPath());
+
+            if (!tree.isVisible(path))
             {
+                index--;
                 continue;
             }
 
@@ -157,6 +208,8 @@ public class SummarySheet extends TimeSheet
         KeyFrameType[] types = character.getSummary();
         FontMetrics fontMetrics = g.getFontMetrics();
         int stringHeight = fontMetrics.getHeight();
+
+        g.setColor(character.getColor());
 
         for (int i = 0; i < types.length; i++)
         {
@@ -278,7 +331,7 @@ public class SummarySheet extends TimeSheet
     }
 
     @Override
-    public void onMouseButton1DoublePressed(Point p)
+    public void updateTableSelection(Point p)
     {
         getTree().setRowSelection(p);
     }

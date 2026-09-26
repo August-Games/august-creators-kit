@@ -7,12 +7,15 @@ import com.creatorskit.models.ModelUtilities;
 import com.creatorskit.programming.MovementManager;
 import com.creatorskit.programming.PathFinder;
 import com.creatorskit.programming.Programmer;
+import com.creatorskit.programming.camera.CameraManager;
+import com.creatorskit.selection.SelectionManager;
 import com.creatorskit.swing.anvil.ModelAnvil;
 import com.creatorskit.swing.manager.Folder;
 import com.creatorskit.swing.manager.FolderType;
 import com.creatorskit.swing.manager.ManagerPanel;
 import com.creatorskit.swing.manager.ManagerTree;
 import com.creatorskit.swing.timesheet.TimeSheetPanel;
+import com.creatorskit.swing.timesheet.keyframe.keyframeselectionmanager.KeyFrameSelectionManager;
 import lombok.Getter;
 import net.runelite.api.Client;
 import net.runelite.client.callback.ClientThread;
@@ -51,6 +54,7 @@ public class ToolBoxFrame extends JFrame
     private final TransmogPanel transmogPanel;
     private final TimeSheetPanel timeSheetPanel;
     private final Programmer programmer;
+    private final CameraManager cameraManager;
     private final PathFinder pathFinder;
     private OkHttpClient httpClient;
 
@@ -58,7 +62,7 @@ public class ToolBoxFrame extends JFrame
     private final BufferedImage ICON = ImageUtil.loadImageResource(getClass(), "/panelicon.png");
 
     @Inject
-    public ToolBoxFrame(Client client, EventBus eventBus, ClientThread clientThread, CreatorsPlugin plugin, CreatorsConfig config, ConfigManager configManager, DataFinder dataFinder, ModelOrganizer modelOrganizer, ModelAnvil modelAnvil, TransmogPanel transmogPanel, PathFinder pathFinder, ModelUtilities modelUtilities, OkHttpClient httpClient)
+    public ToolBoxFrame(Client client, EventBus eventBus, ClientThread clientThread, CreatorsPlugin plugin, CreatorsConfig config, ConfigManager configManager, DataFinder dataFinder, ModelOrganizer modelOrganizer, ModelAnvil modelAnvil, TransmogPanel transmogPanel, PathFinder pathFinder, ModelUtilities modelUtilities, OkHttpClient httpClient, SelectionManager selectionManager, KeyFrameSelectionManager keyFrameSelectionManager, CameraManager cameraManager)
     {
         this.client = client;
         this.clientThread = clientThread;
@@ -67,6 +71,7 @@ public class ToolBoxFrame extends JFrame
         this.eventBus = eventBus;
         this.configManager = configManager;
         this.modelUtilities = modelUtilities;
+        this.cameraManager = cameraManager;
         this.jMenuBar = new JMenuBar();
         this.dataFinder = dataFinder;
         this.modelOrganizer = modelOrganizer;
@@ -75,26 +80,26 @@ public class ToolBoxFrame extends JFrame
         this.pathFinder = pathFinder;
         this.httpClient = httpClient;
 
-        Folder rootFolder = new Folder("Master Folder", FolderType.MASTER, null, null);
+        Folder rootFolder = new Folder("Master Folder", FolderType.MASTER, ParentPanel.MANAGER, null, null);
         DefaultMutableTreeNode managerRootNode = new DefaultMutableTreeNode(rootFolder);
         rootFolder.setLinkedManagerNode(managerRootNode);
 
-        Folder sidePanelFolder = new Folder("Side Panel", FolderType.SIDE_PANEL, null, managerRootNode);
-        Folder managerPanelFolder = new Folder("Manager", FolderType.MANAGER, null, managerRootNode);
+        Folder sidePanelFolder = new Folder("Side Panel", FolderType.SIDE_PANEL, ParentPanel.MANAGER,null, managerRootNode);
+        Folder managerPanelFolder = new Folder("Manager", FolderType.MANAGER, ParentPanel.MANAGER,null, managerRootNode);
         DefaultMutableTreeNode managerSideNode = new DefaultMutableTreeNode(sidePanelFolder);
         DefaultMutableTreeNode managerManagerNode = new DefaultMutableTreeNode(managerPanelFolder);
         sidePanelFolder.setLinkedManagerNode(managerSideNode);
         managerPanelFolder.setLinkedManagerNode(managerManagerNode);
 
         JPanel objectHolder = new JPanel();
-        ManagerTree managerTree = new ManagerTree(this, plugin, objectHolder, managerRootNode, managerSideNode, managerManagerNode);
+        ManagerTree managerTree = new ManagerTree(this, plugin, selectionManager, objectHolder, managerRootNode, managerSideNode, managerManagerNode);
         MovementManager movementManager = new MovementManager(client, config, pathFinder);
 
         setupMenuBar();
-        this.timeSheetPanel = new TimeSheetPanel(client, this, plugin, config, clientThread, dataFinder, managerTree, movementManager);
+        this.timeSheetPanel = new TimeSheetPanel(client, this, plugin, config, configManager, clientThread, dataFinder, managerTree, movementManager, selectionManager, keyFrameSelectionManager, cameraManager);
         this.managerPanel = new ManagerPanel(client, plugin, objectHolder, managerTree);
         this.cacheSearcher = new CacheSearcherTab(client, plugin, clientThread, dataFinder, modelUtilities, httpClient);
-        this.programmer = new Programmer(client, config, clientThread, plugin, timeSheetPanel, dataFinder, modelUtilities);
+        this.programmer = new Programmer(client, config, clientThread, plugin, timeSheetPanel, dataFinder, modelUtilities, cameraManager);
 
         setBackground(ColorScheme.DARK_GRAY_COLOR);
         setTitle("Creator's Kit Toolbox");
@@ -197,6 +202,17 @@ public class ToolBoxFrame extends JFrame
             int x = Integer.parseInt(point[0]);
             int y = Integer.parseInt(point[1]);
             setLocation(x, y);
+
+            Point frameAnchor = new Point(0, 0);
+            SwingUtilities.convertPointToScreen(frameAnchor, this);
+
+            GraphicsConfiguration gc = getGraphicsConfiguration();
+            Rectangle screenBounds = gc.getBounds();
+
+            if (!screenBounds.contains(frameAnchor))
+            {
+                setLocation(0, 0);
+            }
         }
         catch (Exception e)
         {
@@ -231,6 +247,10 @@ public class ToolBoxFrame extends JFrame
         JMenu file = new JMenu("File");
         jMenuBar.add(file);
 
+        JMenuItem newSetup = new JMenuItem("New Setup");
+        newSetup.addActionListener(e -> createNewSetup(true, false));
+        file.add(newSetup);
+
         JMenuItem save = new JMenuItem("Save Setup");
         save.addActionListener(e -> plugin.getCreatorsPanel().quickSaveToFile());
         save.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_S, InputEvent.CTRL_DOWN_MASK));
@@ -240,10 +260,18 @@ public class ToolBoxFrame extends JFrame
         saveAs.addActionListener(e -> plugin.getCreatorsPanel().openSaveDialog());
         file.add(saveAs);
 
-        JMenuItem load = new JMenuItem("Load Setup");
-        load.addActionListener(e -> plugin.getCreatorsPanel().openLoadSetupDialog());
+        JMenuItem load = new JMenuItem("Open Setup");
+        load.addActionListener(e ->
+        {
+            createNewSetup(true, true);
+        });
         load.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_O, InputEvent.CTRL_DOWN_MASK));
         file.add(load);
+
+        JMenuItem loadOnTop = new JMenuItem("Open Setup On Top");
+        loadOnTop.addActionListener(e -> plugin.getCreatorsPanel().openLoadSetupDialog(false));
+        loadOnTop.setToolTipText("Load a Setup on top of the current one instead of replacing it");
+        file.add(loadOnTop);
 
         JMenu timeSheet = new JMenu("Timeline");
         jMenuBar.add(timeSheet);
@@ -328,6 +356,16 @@ public class ToolBoxFrame extends JFrame
         redo.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_Y, InputEvent.CTRL_DOWN_MASK));
         timeSheet.add(redo);
 
+        JMenuItem inchForward = new JMenuItem("Inch Forward");
+        inchForward.addActionListener(e -> timeSheetPanel.inchTimeline(0.1));
+        inchForward.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, InputEvent.SHIFT_DOWN_MASK));
+        timeSheet.add(inchForward);
+
+        JMenuItem inchBackward = new JMenuItem("Inch Backward");
+        inchBackward.addActionListener(e -> timeSheetPanel.inchTimeline(-0.1));
+        inchBackward.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, InputEvent.SHIFT_DOWN_MASK));
+        timeSheet.add(inchBackward);
+
         JMenuItem skipRight = new JMenuItem("Next KeyFrame");
         skipRight.addActionListener(e -> timeSheetPanel.onAttributeSkipForward());
         skipRight.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, InputEvent.CTRL_DOWN_MASK));
@@ -388,5 +426,33 @@ public class ToolBoxFrame extends JFrame
         {
             plugin.sendChatMessage("Failed to open link.");
         }
+    }
+
+    public void createNewSetup(boolean warning, boolean loadNewSetup)
+    {
+        Thread thread = new Thread(() ->
+        {
+            String warningMessage = loadNewSetup ? "Are you sure you want to open another Setup file? All unsaved changes will be lost" : "Are you sure you want to create a new Setup file? All unsaved changes will be lost";
+
+            if (warning || plugin.getCreatorsPanel().getLastFileLoaded() != null)
+            {
+                int result = JOptionPane.showConfirmDialog(null, warningMessage);
+                if (result != JOptionPane.YES_OPTION)
+                {
+                    return;
+                }
+            }
+
+            managerPanel.getManagerTree().removeAllNodes();
+            modelUtilities.clearCustomModels();
+            cameraManager.clearKeyFrames();
+
+            if (loadNewSetup)
+            {
+                plugin.getCreatorsPanel().openLoadSetupDialog(true);
+            }
+        });
+
+        thread.start();
     }
 }

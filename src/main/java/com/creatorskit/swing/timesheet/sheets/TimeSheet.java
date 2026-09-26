@@ -7,16 +7,17 @@ import com.creatorskit.swing.manager.ManagerTree;
 import com.creatorskit.swing.timesheet.AttributePanel;
 import com.creatorskit.swing.timesheet.TimeSheetPanel;
 import com.creatorskit.swing.timesheet.keyframe.KeyFrame;
-import com.creatorskit.swing.timesheet.keyframe.KeyFrameType;
+import com.creatorskit.swing.timesheet.keyframe.KeyFrameTarget;
+import com.creatorskit.swing.timesheet.keyframe.keyframeactions.KeyFrameCameraAction;
 import com.creatorskit.swing.timesheet.keyframe.keyframeactions.KeyFrameCharacterAction;
 import com.creatorskit.swing.timesheet.keyframe.keyframeactions.KeyFrameAction;
-import com.creatorskit.swing.timesheet.keyframe.keyframeactions.KeyFrameCharacterActionType;
+import com.creatorskit.swing.timesheet.keyframe.keyframeactions.KeyFrameActionType;
+import com.creatorskit.swing.timesheet.keyframe.keyframeselectionmanager.KeyFrameSelectionManager;
 import lombok.Getter;
 import lombok.Setter;
 import net.runelite.client.ui.ColorScheme;
 import net.runelite.client.ui.FontManager;
 import net.runelite.client.util.ImageUtil;
-import org.apache.commons.lang3.ArrayUtils;
 
 import javax.swing.*;
 import javax.swing.border.LineBorder;
@@ -24,6 +25,8 @@ import javax.swing.tree.TreePath;
 import java.awt.*;
 import java.awt.event.*;
 import java.awt.image.BufferedImage;
+import java.util.*;
+import java.util.List;
 
 @Getter
 @Setter
@@ -33,9 +36,11 @@ public class TimeSheet extends JPanel
     private CreatorsConfig config;
     private ManagerTree managerTree;
     private AttributePanel attributePanel;
+    private KeyFrameSelectionManager kfsm;
 
     private final BufferedImage keyframeImage = ImageUtil.loadImageResource(getClass(), "/Keyframe.png");
     private final BufferedImage keyframeSelected = ImageUtil.loadImageResource(getClass(), "/Keyframe_Selected.png");
+    private final BufferedImage keyframePrimary = ImageUtil.loadImageResource(getClass(), "/Keyframe_Primary.png");
 
     private double zoom = 50;
     private double hScroll = 0;
@@ -60,17 +65,16 @@ public class TimeSheet extends JPanel
     public final int SHOW_5_ZOOM = 200;
     public final int SHOW_1_ZOOM = 50;
 
-    private KeyFrame[] visibleKeyFrames = new KeyFrame[0];
-    private Character selectedCharacter;
     private boolean keyFrameClicked = false;
-    private KeyFrame[] clickedKeyFrames = new KeyFrame[0];
+    private LinkedHashMap<KeyFrameTarget, KeyFrame[]> clickedKeyFrames = new LinkedHashMap<>();
 
-    public TimeSheet(ToolBoxFrame toolBox, CreatorsConfig config, ManagerTree managerTree, AttributePanel attributePanel)
+    public TimeSheet(ToolBoxFrame toolBox, CreatorsConfig config, ManagerTree managerTree, AttributePanel attributePanel, KeyFrameSelectionManager kfsm)
     {
         this.toolBox = toolBox;
         this.config = config;
         this.managerTree = managerTree;
         this.attributePanel = attributePanel;
+        this.kfsm = kfsm;
 
         setBorder(new LineBorder(ColorScheme.MEDIUM_GRAY_COLOR, 1));
         setBackground(ColorScheme.DARK_GRAY_COLOR);
@@ -78,7 +82,6 @@ public class TimeSheet extends JPanel
         setFocusable(true);
         requestFocusInWindow();
 
-        setKeyBindings();
         setMouseListeners(this);
 
         revalidate();
@@ -90,14 +93,16 @@ public class TimeSheet extends JPanel
         vScroll = scroll;
     }
 
+    @Override
     public void paintComponent(Graphics g)
     {
         super.paintComponent(g);
         Graphics2D g2 = (Graphics2D) g;
         g2.setStroke(new BasicStroke(1));
         drawBackground(g2);
-        drawBackgroundText(g2);
         drawHighlight(g2);
+        draw3DPreview(g2);
+        drawBackgroundText(g2);
         drawBackgroundLines(g2);
         drawRectangleSelect(g2);
         drawKeyFrames(g2);
@@ -105,7 +110,7 @@ public class TimeSheet extends JPanel
         drawTextHeader(g2);
         drawTimeIndicator(g2);
         drawPreviewTimeIndicator(g2);
-        revalidate();
+        drawRowLabels(g2);
         repaint();
     }
 
@@ -208,7 +213,17 @@ public class TimeSheet extends JPanel
         }
     }
 
+    public void draw3DPreview(Graphics g)
+    {
+
+    }
+
     public void drawBackgroundText(Graphics g)
+    {
+
+    }
+
+    public void drawRowLabels(Graphics g)
     {
 
     }
@@ -398,36 +413,133 @@ public class TimeSheet extends JPanel
 
     }
 
-    private void setKeyBindings()
-    {
-        ActionMap actionMap = getActionMap();
-        InputMap inputMap = getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
-
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, 0), "VK_LEFT");
-        actionMap.put("VK_LEFT", new AbstractAction()
-        {
-            @Override
-            public void actionPerformed(ActionEvent e)
-            {
-
-                getTimeSheetPanel().setCurrentTime(TimeSheetPanel.round(currentTime - 0.1), false);
-            }
-        });
-
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0), "VK_RIGHT");
-        actionMap.put("VK_RIGHT", new AbstractAction()
-        {
-            @Override
-            public void actionPerformed(ActionEvent e)
-            {
-                getTimeSheetPanel().setCurrentTime(TimeSheetPanel.round(currentTime + 0.1), false);
-            }
-        });
-    }
-
     public void updateSelectedKeyFrameOnPressed(boolean shiftDown)
     {
 
+    }
+
+    private void onKeyFrameDragged(Point mousePosition, boolean shiftDown)
+    {
+        if (mousePosition.distance(mousePointOnPressed) < 1)
+        {
+            updateSelectedKeyFrameOnRelease(mousePosition, shiftDown);
+            return;
+        }
+
+        TimeSheetPanel timeSheetPanel = getTimeSheetPanel();
+        TimelineUnits timelineUnits = config.timelineUnits();
+
+        final List<KeyFrameAction> kfa = new ArrayList<>();
+
+        LinkedHashMap<KeyFrameTarget, KeyFrame[]> selected = new LinkedHashMap<>(kfsm.getSelected());
+        KeyFrame primary = kfsm.getPrimary();
+
+        selected.forEach((KeyFrameTarget target, KeyFrame[] keyFrames) ->
+        {
+            switch (target.getType())
+            {
+                case CHARACTER:
+                    for (KeyFrame keyFrame : keyFrames)
+                    {
+                        timeSheetPanel.removeKeyFrame(target, keyFrame);
+                        kfa.add(new KeyFrameCharacterAction(keyFrame, (Character) target.getValue(), KeyFrameActionType.REMOVE));
+                    }
+                    break;
+                case CAMERA:
+                    for (KeyFrame keyFrame : keyFrames)
+                    {
+                        timeSheetPanel.removeKeyFrame(target, keyFrame);
+                        kfa.add(new KeyFrameCameraAction(keyFrame, KeyFrameActionType.REMOVE));
+                    }
+                    break;
+            }
+        });
+
+        double mouseX = Math.max(0, Math.min(mousePosition.getX(), getWidth()));
+        double xCurrentTime = currentTimeToMouseX();
+
+        final double[] change = new double[]{0};
+        if (Math.abs(Math.abs(mouseX) - Math.abs(xCurrentTime)) > DRAG_STICK_RANGE)
+        {
+            change[0] = round(timelineUnits, (mouseX - getMousePointOnPressed().getX()) * getZoom() / getWidth());
+        }
+        else
+        {
+            LinkedHashMap<KeyFrameTarget, KeyFrame[]> clickedFrames = getClickedKeyFrames();
+            change[0] = 0;
+
+            if (!clickedFrames.isEmpty())
+            {
+                Map.Entry<KeyFrameTarget, KeyFrame[]> firstEntry = clickedFrames.entrySet().iterator().next();
+                KeyFrame[] keyFrames = firstEntry.getValue();
+                KeyFrame keyFrame = keyFrames[0];
+                change[0] = round(timelineUnits, getCurrentTime() - keyFrame.getTick());
+            }
+        }
+
+        List<KeyFrame> cameraKeyFrameCopies = new ArrayList<>();
+        LinkedHashMap<Character, KeyFrame[]> characterCopies = new LinkedHashMap<>();
+        KeyFrame[] primaryCopy = new KeyFrame[1];
+
+        selected.forEach((KeyFrameTarget target, KeyFrame[] keyFrames) ->
+        {
+            switch (target.getType())
+            {
+                case CHARACTER:
+                    KeyFrame[] keyFrameCopies = new KeyFrame[keyFrames.length];
+                    Character c = (Character) target.getValue();
+                    for (int i = 0; i < keyFrames.length; i++)
+                    {
+                        KeyFrame keyFrame = keyFrames[i];
+                        KeyFrame copy = KeyFrame.createCopy(keyFrame, round(timelineUnits, keyFrame.getTick() + change[0]));
+                        keyFrameCopies[i] = copy;
+
+                        if (keyFrame == primary)
+                        {
+                            primaryCopy[0] = copy;
+                        }
+
+                        KeyFrame keyFrameToReplace = timeSheetPanel.addKeyFrame(target, copy);
+                        if (keyFrameToReplace != null)
+                        {
+                            kfa.add(new KeyFrameCharacterAction(keyFrameToReplace, c, KeyFrameActionType.REMOVE));
+                        }
+
+                        kfa.add(new KeyFrameCharacterAction(copy, c, KeyFrameActionType.ADD));
+                    }
+
+                    characterCopies.put(c, keyFrameCopies);
+                    break;
+                case CAMERA:
+                    KeyFrame[] cameraCopies = new KeyFrame[keyFrames.length];
+                    for (int i = 0; i < keyFrames.length; i++)
+                    {
+                        KeyFrame keyFrame = keyFrames[i];
+                        KeyFrame copy = KeyFrame.createCopy(keyFrame, round(timelineUnits, keyFrame.getTick() + change[0]));
+                        cameraCopies[i] = copy;
+
+                        if (keyFrame == primary)
+                        {
+                            primaryCopy[0] = copy;
+                        }
+
+                        KeyFrame keyFrameToReplace = timeSheetPanel.addKeyFrame(target, copy);
+                        if (keyFrameToReplace != null)
+                        {
+                            kfa.add(new KeyFrameCameraAction(keyFrameToReplace, KeyFrameActionType.REMOVE));
+                        }
+
+                        kfa.add(new KeyFrameCameraAction(copy, KeyFrameActionType.ADD));
+                    }
+
+                    cameraKeyFrameCopies.addAll(Arrays.asList(cameraCopies));
+                    break;
+            }
+        });
+
+        kfsm.addGroups(cameraKeyFrameCopies.toArray(new KeyFrame[0]), characterCopies, primaryCopy[0]);
+        timeSheetPanel.stackKeyFrameActions(kfa);
+        attributePanel.updateAttributes();
     }
 
     private void setMouseListeners(TimeSheet timeSheet)
@@ -464,7 +576,7 @@ public class TimeSheet extends JPanel
                 }
 
                 clickedKeyFrames = getKeyFrameClicked(mousePosition);
-                keyFrameClicked = clickedKeyFrames != null;
+                keyFrameClicked = clickedKeyFrames != null && !clickedKeyFrames.isEmpty();
                 if (keyFrameClicked)
                 {
                     allowRectangleSelect = false;
@@ -491,8 +603,6 @@ public class TimeSheet extends JPanel
                     return;
                 }
 
-                TimeSheetPanel timeSheetPanel = getTimeSheetPanel();
-
                 if (timeIndicatorPressed)
                 {
                     double time = getTimeIndicatorPosition();
@@ -501,82 +611,30 @@ public class TimeSheet extends JPanel
                     return;
                 }
 
-                if (e.getClickCount() == 2)
-                {
-                    onMouseButton1DoublePressed(mousePosition);
-                }
-
+                boolean keyFrameWasClicked = keyFrameClicked;
                 if (keyFrameClicked)
                 {
-                    if (mousePosition.distance(mousePointOnPressed) < 1)
-                    {
-                        updateSelectedKeyFrameOnRelease(mousePosition, e.isShiftDown());
-                    }
-                    else
-                    {
-                        TimelineUnits timelineUnits = config.timelineUnits();
-                        double modeMultiplier = timelineUnits.getMultiplier();
-
-                        KeyFrame[] keyFrames = getSelectedKeyFrames();
-                        KeyFrameAction[] kfa = new KeyFrameAction[0];
-
-                        for (KeyFrame keyFrame : keyFrames)
-                        {
-                            timeSheetPanel.removeKeyFrame(selectedCharacter, keyFrame);
-                            kfa = ArrayUtils.add(kfa, new KeyFrameCharacterAction(keyFrame, selectedCharacter, KeyFrameCharacterActionType.REMOVE));
-                        }
-
-                        double mouseX = Math.max(0, Math.min(mousePosition.getX(), getWidth()));
-                        double xCurrentTime = currentTimeToMouseX();
-
-                        double change;
-                        if (Math.abs(Math.abs(mouseX) - Math.abs(xCurrentTime)) > DRAG_STICK_RANGE)
-                        {
-                            change = round(timelineUnits, (mouseX - getMousePointOnPressed().getX()) * getZoom() / getWidth());
-                        }
-                        else
-                        {
-                            KeyFrame[] clickedFrames = getClickedKeyFrames();
-                            change = 0;
-
-                            if (clickedFrames.length > 0)
-                            {
-                                KeyFrame keyFrame = clickedFrames[0];
-                                change = round(timelineUnits, getCurrentTime() - keyFrame.getTick());
-                            }
-                        }
-
-                        KeyFrame[] copies = new KeyFrame[keyFrames.length];
-                        for (int i = 0; i < keyFrames.length; i++)
-                        {
-                            KeyFrame keyFrame = keyFrames[i];
-                            KeyFrame copy = KeyFrame.createCopy(keyFrame, round(timelineUnits, keyFrame.getTick() + change));
-                            copies[i] = copy;
-                            KeyFrame keyFrameToReplace = timeSheetPanel.addKeyFrame(selectedCharacter, copy);
-                            if (keyFrameToReplace != null)
-                            {
-                                kfa = ArrayUtils.add(kfa, new KeyFrameCharacterAction(keyFrameToReplace, selectedCharacter, KeyFrameCharacterActionType.REMOVE));
-                            }
-
-                            kfa = ArrayUtils.add(kfa, new KeyFrameCharacterAction(copy, selectedCharacter, KeyFrameCharacterActionType.ADD));
-                        }
-
-                        setSelectedKeyFrames(copies);
-                        timeSheetPanel.addKeyFrameActions(kfa);
-                    }
-
+                    onKeyFrameDragged(mousePosition, e.isShiftDown());
                     keyFrameClicked = false;
                     allowRectangleSelect = false;
                 }
-                else
-                {
-                    setSelectedKeyFrames(new KeyFrame[0]);
-                }
 
+                boolean rectangleSelectionFound = false;
                 if (allowRectangleSelect)
                 {
-                    checkRectangleForKeyFrames(mousePosition, e.isShiftDown());
+                    rectangleSelectionFound = checkRectangleForKeyFrames(mousePosition, e.isShiftDown());
                     allowRectangleSelect = false;
+
+                    if (!rectangleSelectionFound)
+                    {
+                        updateTableSelection(mousePosition);
+                    }
+                }
+
+                if (!keyFrameWasClicked && !rectangleSelectionFound)
+                {
+                    kfsm.clear();
+                    getTimeSheetPanel().onKeyFrameSelectionChanged();
                 }
             }
         });
@@ -680,11 +738,11 @@ public class TimeSheet extends JPanel
 
     public void onMouseButton3Pressed(Point p) {};
 
-    public void onMouseButton1DoublePressed(Point p) {};
+    public void updateTableSelection(Point p) {};
 
-    public KeyFrame[] getKeyFrameClicked(Point point)
+    public LinkedHashMap<KeyFrameTarget, KeyFrame[]> getKeyFrameClicked(Point point)
     {
-        return new KeyFrame[0];
+        return null;
     }
 
     public void updateSelectedKeyFrameOnRelease(Point point, boolean shiftKey)
@@ -692,9 +750,22 @@ public class TimeSheet extends JPanel
 
     }
 
-    public void checkRectangleForKeyFrames(Point point, boolean shiftKey)
+    public boolean checkRectangleForKeyFrames(Point point, boolean shiftKey)
     {
+        Point absoluteMouse = MouseInfo.getPointerInfo().getLocation();
+        Point rectangleSelectStart = getMousePointOnPressed();
 
+        int x1 = (int) rectangleSelectStart.getX();
+        int x2 = (int) (absoluteMouse.getX() - getLocationOnScreen().getX());
+        int y1 = (int) rectangleSelectStart.getY();
+        int y2 = (int) (absoluteMouse.getY() - getLocationOnScreen().getY());
+
+        if (Math.abs(x1 - x2) < 10 && Math.abs(y1 - y2) < 10)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private double getTimeIndicatorPosition()
@@ -729,22 +800,6 @@ public class TimeSheet extends JPanel
     public TimeSheetPanel getTimeSheetPanel()
     {
         return toolBox.getTimeSheetPanel();
-    }
-
-
-    public KeyFrame[] getSelectedKeyFrames()
-    {
-        return getTimeSheetPanel().getSelectedKeyFrames();
-    }
-
-    public void setSelectedKeyFrames(KeyFrame[] keyFrames)
-    {
-        getTimeSheetPanel().setSelectedKeyFrames(keyFrames);
-        if (keyFrames != null && keyFrames.length > 0)
-        {
-            KeyFrameType type = keyFrames[keyFrames.length - 1].getKeyFrameType();
-            attributePanel.switchCards(type);
-        }
     }
 
     private void updatePreviewTime(double time)

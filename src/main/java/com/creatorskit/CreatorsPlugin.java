@@ -1,12 +1,15 @@
 package com.creatorskit;
 
+import com.creatorskit.programming.camera.AutoRotate;
+import com.creatorskit.hotkeymanager.HotKeyManager;
+import com.creatorskit.hotkeymanager.LocationOption;
 import com.creatorskit.models.*;
 import com.creatorskit.programming.*;
-import com.creatorskit.programming.orientation.OrientationHotkeyMode;
+import com.creatorskit.programming.orientation.Orientation;
 import com.creatorskit.saves.TransmogLoadOption;
+import com.creatorskit.selection.SelectionManager;
 import com.creatorskit.swing.*;
 import com.creatorskit.swing.anvil.ComplexPanel;
-import com.creatorskit.swing.timesheet.TimeSheetPanel;
 import com.creatorskit.swing.timesheet.keyframe.*;
 import com.google.gson.Gson;
 import com.google.inject.Provides;
@@ -27,10 +30,11 @@ import net.runelite.client.chat.ChatMessageBuilder;
 import net.runelite.client.chat.ChatMessageManager;
 import net.runelite.client.chat.QueuedMessage;
 import net.runelite.client.config.ConfigManager;
-import net.runelite.client.config.Keybind;
 import net.runelite.client.eventbus.EventBus;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
+import net.runelite.client.externalplugins.ExternalPluginManager;
+import net.runelite.client.externalplugins.PluginHubManifest;
 import net.runelite.client.input.KeyManager;
 import net.runelite.client.input.MouseListener;
 import net.runelite.client.input.MouseManager;
@@ -40,13 +44,9 @@ import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.util.ColorUtil;
-import net.runelite.client.util.HotkeyListener;
 import net.runelite.client.util.ImageUtil;
-import org.apache.commons.lang3.ArrayUtils;
 
 import java.awt.*;
-import java.awt.event.InputEvent;
-import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
 import java.awt.image.BufferedImage;
@@ -83,19 +83,18 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 	@Inject
 	private OverlayManager overlayManager;
 
-	@Inject
+	// These collaborators take CreatorsPlugin in their own constructors, so field-injecting
+	// them here is a Guice construction cycle ("Recursive load of CreatorsPlugin.<init>()")
+	// that prevents the plugin from starting at all. They are resolved lazily in startUp()
+	// instead, when this instance is fully constructed.
 	private CreatorsOverlay overlay;
 
-	@Inject
 	private TextOverlay textOverlay;
 
-	@Inject
 	private OverheadOverlay overheadOverlay;
 
-	@Inject
 	private HealthOverlay healthOverlay;
 
-	@Inject
 	private HitsplatOverlay hitsplatOverlay;
 
 	@Inject
@@ -107,7 +106,8 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 	@Inject
 	private ChatMessageManager chatMessageManager;
 
-	@Inject
+	// ModelGetter also takes CreatorsPlugin in its constructor, so it joins the lazy
+	// startUp() resolution below.
 	private ModelGetter modelGetter;
 
 	@Inject
@@ -119,41 +119,37 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 	@Inject
 	private Gson gson;
 
+	@Inject
+	private SelectionManager selectionManager;
+
+	// HotKeyManager takes CreatorsPlugin (and CreatorsOverlay) in its constructor, so it
+	// joins the lazy startUp() resolution below for the same reason.
+	private HotKeyManager hotKeyManager;
+
 	private CreatorsPanel creatorsPanel;
 	private NavigationButton navigationButton;
-	private boolean overlaysActive = false;
 	private final ArrayList<Character> characters = new ArrayList<>();
 	private final ArrayList<CustomModel> storedModels = new ArrayList<>();
-	private Character selectedCharacter;
 	private Character hoveredCharacter;
 	private CKObject transmog;
 	private CKObject previewObject;
 	private Random random = new Random();
 	private Model previewArrow;
 	private CustomModel transmogModel;
-	private final int GOLDEN_CHIN = 29757;
 	private int savedRegion = -1;
 	private int savedPlane = -1;
 	private AutoRotate autoRotateYaw = AutoRotate.OFF;
 	private AutoRotate autoRotatePitch = AutoRotate.OFF;
-	private int oculusOrbSpeed = 36;
+	private LocalPoint draggedPoint;
 	private double clickX;
 	private double clickY;
 	private boolean mousePressed = false;
 	private boolean autoSetupPathFound = true;
 	private boolean autoTransmogFound = true;
-	private boolean addProgramStep = false;
 
 	@Override
 	protected void startUp() throws Exception
 	{
-		// Lazily load the cache catalog now that the plugin is enabled. DataFinder no longer
-		// loads in its constructor, so nothing is held while the plugin is disabled. The lookups
-		// run asynchronously (OkHttp), so this does not stall the client thread; consumers that
-		// read the data (Cache Searcher, model dropdowns, AttributePanel) already gate their
-		// first access on DataFinder.isDataLoaded()/addLoadCallback().
-		dataFinder.reloadData();
-
 		creatorsPanel = injector.getInstance(CreatorsPanel.class);
 		final BufferedImage icon = ImageUtil.loadImageResource(getClass(), "/panelicon.png");
 		navigationButton = NavigationButton.builder()
@@ -166,47 +162,61 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 		ToolBoxFrame toolBox = creatorsPanel.getToolBox();
 
 		eventBus.register(toolBox.getProgrammer());
+		eventBus.register(toolBox.getTimeSheetPanel().getSummarySheet());
 		eventBus.register(toolBox.getTransmogPanel());
 		eventBus.register(toolBox.getCacheSearcher().getRenderPanel());
 
 		clientToolbar.addNavigation(navigationButton);
+		// Lazy resolution breaks the Guice construction cycle (each of these takes
+		// CreatorsPlugin in its own constructor). This instance is fully constructed now.
+		overlay = injector.getInstance(CreatorsOverlay.class);
+		overheadOverlay = injector.getInstance(OverheadOverlay.class);
+		healthOverlay = injector.getInstance(HealthOverlay.class);
+		hitsplatOverlay = injector.getInstance(HitsplatOverlay.class);
+		textOverlay = injector.getInstance(TextOverlay.class);
+		modelGetter = injector.getInstance(ModelGetter.class);
+		hotKeyManager = injector.getInstance(HotKeyManager.class);
 		overlayManager.add(overlay);
 		overlayManager.add(overheadOverlay);
 		overlayManager.add(healthOverlay);
 		overlayManager.add(hitsplatOverlay);
 		overlayManager.add(textOverlay);
 
-		keyManager.registerKeyListener(overlayKeyListener);
-		keyManager.registerKeyListener(oculusOrbListener);
-		keyManager.registerKeyListener(orbPreset1Listener);
-		keyManager.registerKeyListener(orbPreset2Listener);
-		keyManager.registerKeyListener(orbPreset3Listener);
-		keyManager.registerKeyListener(quickSpawnListener);
-		keyManager.registerKeyListener(quickLocationListener);
-		keyManager.registerKeyListener(quickDuplicateListener);
-		keyManager.registerKeyListener(quickRotateCWListener);
-		keyManager.registerKeyListener(quickRotateCCWListener);
-		keyManager.registerKeyListener(autoLeftListener);
-		keyManager.registerKeyListener(autoRightListener);
-		keyManager.registerKeyListener(autoUpListener);
-		keyManager.registerKeyListener(autoDownListener);
-		keyManager.registerKeyListener(addProgramStepListener);
-		keyManager.registerKeyListener(removeProgramStepListener);
-		keyManager.registerKeyListener(clearProgramStepListener);
-		keyManager.registerKeyListener(addOrientationStartListener);
-		keyManager.registerKeyListener(addOrientationGoalListener);
-		keyManager.registerKeyListener(playPauseListener);
-		keyManager.registerKeyListener(resetTimelineListener);
-		keyManager.registerKeyListener(skipForwardListener);
-		keyManager.registerKeyListener(skipSubForwardListener);
-		keyManager.registerKeyListener(skipBackwardListener);
-		keyManager.registerKeyListener(skipSubBackwardListener);
-		keyManager.registerKeyListener(saveListener);
-		keyManager.registerKeyListener(openListener);
-		keyManager.registerKeyListener(undoListener);
-		keyManager.registerKeyListener(redoListener);
+		keyManager.registerKeyListener(hotKeyManager.overlayKeyListener);
+		keyManager.registerKeyListener(hotKeyManager.oculusOrbListener);
+		keyManager.registerKeyListener(hotKeyManager.freecamKeyListener);
+		keyManager.registerKeyListener(hotKeyManager.orbPreset1Listener);
+		keyManager.registerKeyListener(hotKeyManager.orbPreset2Listener);
+		keyManager.registerKeyListener(hotKeyManager.orbPreset3Listener);
+		keyManager.registerKeyListener(hotKeyManager.cameraHotkey);
+		keyManager.registerKeyListener(hotKeyManager.quickSpawnListener);
+		keyManager.registerKeyListener(hotKeyManager.quickLocationListener);
+		keyManager.registerKeyListener(hotKeyManager.quickDuplicateListener);
+		keyManager.registerKeyListener(hotKeyManager.quickRotateCWListener);
+		keyManager.registerKeyListener(hotKeyManager.quickRotateCCWListener);
+		keyManager.registerKeyListener(hotKeyManager.autoLeftListener);
+		keyManager.registerKeyListener(hotKeyManager.autoRightListener);
+		keyManager.registerKeyListener(hotKeyManager.autoUpListener);
+		keyManager.registerKeyListener(hotKeyManager.autoDownListener);
+		keyManager.registerKeyListener(hotKeyManager.addProgramStepListener);
+		keyManager.registerKeyListener(hotKeyManager.removeProgramStepListener);
+		keyManager.registerKeyListener(hotKeyManager.clearProgramStepListener);
+		keyManager.registerKeyListener(hotKeyManager.addOrientationStartListener);
+		keyManager.registerKeyListener(hotKeyManager.addOrientationGoalListener);
+		keyManager.registerKeyListener(hotKeyManager.playPauseListener);
+		keyManager.registerKeyListener(hotKeyManager.resetTimelineListener);
+		keyManager.registerKeyListener(hotKeyManager.skipForwardListener);
+		keyManager.registerKeyListener(hotKeyManager.skipSubForwardListener);
+		keyManager.registerKeyListener(hotKeyManager.skipBackwardListener);
+		keyManager.registerKeyListener(hotKeyManager.skipSubBackwardListener);
+		keyManager.registerKeyListener(hotKeyManager.saveListener);
+		keyManager.registerKeyListener(hotKeyManager.openListener);
+		keyManager.registerKeyListener(hotKeyManager.undoListener);
+		keyManager.registerKeyListener(hotKeyManager.redoListener);
 		mouseManager.registerMouseWheelListener(this::mouseWheelMoved);
 		mouseManager.registerMouseListener(this);
+
+		dataFinder.loadDataBase();
 
 		if (config.autoSetup())
 		{
@@ -226,7 +236,7 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 
 			if (SETUP_DIR.exists())
 			{
-				creatorsPanel.loadSetup(SETUP_DIR);
+				creatorsPanel.loadSetup(SETUP_DIR, true);
 			}
 			else
 			{
@@ -259,32 +269,19 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 				autoTransmogFound = false;
 			}
 		}
-
-		oculusOrbSpeed = config.orbSpeed();
-
-		String string = configManager.getConfiguration("creatorssuite", "overlaysActive");
-		try
-		{
-            overlaysActive = Boolean.parseBoolean(string);
-		}
-		catch (Exception e)
-		{
-			overlaysActive = false;
-		}
 	}
 
 	@Override
 	protected void shutDown() throws Exception
 	{
-		creatorsPanel.clearSidePanels(false);
-		creatorsPanel.clearManagerPanels();
-		creatorsPanel.getToolBox().dispose();
+		creatorsPanel.deleteCharacters(characters.toArray(new Character[0]));
 
 		ToolBoxFrame toolBox = creatorsPanel.getToolBox();
-
 		eventBus.unregister(toolBox.getProgrammer());
+		eventBus.unregister(toolBox.getTimeSheetPanel().getSummarySheet());
 		eventBus.unregister(toolBox.getTransmogPanel());
 		eventBus.unregister(toolBox.getCacheSearcher().getRenderPanel());
+		toolBox.dispose();
 
 		clientToolbar.removeNavigation(navigationButton);
 		overlayManager.remove(overlay);
@@ -293,41 +290,43 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 		overlayManager.remove(healthOverlay);
 		overlayManager.remove(hitsplatOverlay);
 
-		keyManager.unregisterKeyListener(overlayKeyListener);
-		keyManager.unregisterKeyListener(oculusOrbListener);
-		keyManager.unregisterKeyListener(orbPreset1Listener);
-		keyManager.unregisterKeyListener(orbPreset2Listener);
-		keyManager.unregisterKeyListener(orbPreset3Listener);
-		keyManager.unregisterKeyListener(quickSpawnListener);
-		keyManager.unregisterKeyListener(quickLocationListener);
-		keyManager.unregisterKeyListener(quickDuplicateListener);
-		keyManager.unregisterKeyListener(quickRotateCWListener);
-		keyManager.unregisterKeyListener(quickRotateCCWListener);
-		keyManager.unregisterKeyListener(autoLeftListener);
-		keyManager.unregisterKeyListener(autoRightListener);
-		keyManager.unregisterKeyListener(autoUpListener);
-		keyManager.unregisterKeyListener(autoDownListener);
-		keyManager.unregisterKeyListener(addProgramStepListener);
-		keyManager.unregisterKeyListener(removeProgramStepListener);
-		keyManager.unregisterKeyListener(clearProgramStepListener);
-		keyManager.unregisterKeyListener(addOrientationStartListener);
-		keyManager.unregisterKeyListener(addOrientationGoalListener);
-		keyManager.unregisterKeyListener(playPauseListener);
-		keyManager.unregisterKeyListener(resetTimelineListener);
-		keyManager.unregisterKeyListener(skipForwardListener);
-		keyManager.unregisterKeyListener(skipSubForwardListener);
-		keyManager.unregisterKeyListener(skipBackwardListener);
-		keyManager.unregisterKeyListener(skipSubBackwardListener);
-		keyManager.unregisterKeyListener(saveListener);
-		keyManager.unregisterKeyListener(openListener);
-		keyManager.unregisterKeyListener(undoListener);
-		keyManager.unregisterKeyListener(redoListener);
+		keyManager.unregisterKeyListener(hotKeyManager.overlayKeyListener);
+		keyManager.unregisterKeyListener(hotKeyManager.oculusOrbListener);
+		keyManager.unregisterKeyListener(hotKeyManager.freecamKeyListener);
+		keyManager.unregisterKeyListener(hotKeyManager.orbPreset1Listener);
+		keyManager.unregisterKeyListener(hotKeyManager.orbPreset2Listener);
+		keyManager.unregisterKeyListener(hotKeyManager.orbPreset3Listener);
+		keyManager.unregisterKeyListener(hotKeyManager.cameraHotkey);
+		keyManager.unregisterKeyListener(hotKeyManager.quickSpawnListener);
+		keyManager.unregisterKeyListener(hotKeyManager.quickLocationListener);
+		keyManager.unregisterKeyListener(hotKeyManager.quickDuplicateListener);
+		keyManager.unregisterKeyListener(hotKeyManager.quickRotateCWListener);
+		keyManager.unregisterKeyListener(hotKeyManager.quickRotateCCWListener);
+		keyManager.unregisterKeyListener(hotKeyManager.autoLeftListener);
+		keyManager.unregisterKeyListener(hotKeyManager.autoRightListener);
+		keyManager.unregisterKeyListener(hotKeyManager.autoUpListener);
+		keyManager.unregisterKeyListener(hotKeyManager.autoDownListener);
+		keyManager.unregisterKeyListener(hotKeyManager.addProgramStepListener);
+		keyManager.unregisterKeyListener(hotKeyManager.removeProgramStepListener);
+		keyManager.unregisterKeyListener(hotKeyManager.clearProgramStepListener);
+		keyManager.unregisterKeyListener(hotKeyManager.addOrientationStartListener);
+		keyManager.unregisterKeyListener(hotKeyManager.addOrientationGoalListener);
+		keyManager.unregisterKeyListener(hotKeyManager.playPauseListener);
+		keyManager.unregisterKeyListener(hotKeyManager.resetTimelineListener);
+		keyManager.unregisterKeyListener(hotKeyManager.skipForwardListener);
+		keyManager.unregisterKeyListener(hotKeyManager.skipSubForwardListener);
+		keyManager.unregisterKeyListener(hotKeyManager.skipBackwardListener);
+		keyManager.unregisterKeyListener(hotKeyManager.skipSubBackwardListener);
+		keyManager.unregisterKeyListener(hotKeyManager.saveListener);
+		keyManager.unregisterKeyListener(hotKeyManager.openListener);
+		keyManager.unregisterKeyListener(hotKeyManager.undoListener);
+		keyManager.unregisterKeyListener(hotKeyManager.redoListener);
 		mouseManager.unregisterMouseWheelListener(this::mouseWheelMoved);
 		mouseManager.unregisterMouseListener(this);
 
-		// Free the entire cache catalog so disabling the plugin reclaims the memory (and lets the
-		// forced-loaded model geometry be GC'd). Re-loaded on the next startUp().
-		dataFinder.clearData();
+		// Free the entire cache catalog so disabling the plugin reclaims the memory.
+		// Re-loaded on the next startUp().
+		dataFinder.clearDataBase();
 	}
 
 	@Subscribe
@@ -366,11 +365,15 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 		if (savedPlane != plane)
 		{
 			savedPlane = plane;
-			for (int i = 0; i < characters.size(); i++)
+			Programmer programmer = creatorsPanel.getToolBox().getProgrammer();
+			clientThread.invokeLater(() ->
 			{
-				Character character = characters.get(i);
-				setLocation(character, false, false, character.isActive() ? ActiveOption.ACTIVE : ActiveOption.INACTIVE, LocationOption.TO_CURRENT_TICK);
-			}
+				for (int i = 0; i < characters.size(); i++)
+				{
+					Character character = characters.get(i);
+					character.setLocation(client, clientThread, programmer, false, false, character.isActive() ? ActiveOption.ACTIVE : ActiveOption.INACTIVE, LocationOption.TO_CURRENT_TICK);
+				}
+			});
 		}
 	}
 
@@ -381,12 +384,6 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 			return;
 
 		updatePreviewObject(client.getTopLevelWorldView().getSelectedSceneTile());
-
-		if (addProgramStep)
-		{
-			addProgramStep = false;
-			addProgramStep();
-		}
 
 		switch (autoRotateYaw)
 		{
@@ -426,7 +423,7 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 		if (event.getKey().equals("orbSpeed"))
 		{
 			client.setFreeCameraSpeed(config.orbSpeed());
-			oculusOrbSpeed = config.orbSpeed();
+			hotKeyManager.setOculusOrbSpeed(config.orbSpeed());
 		}
 
 		if (event.getKey().equals("enableTransmog"))
@@ -446,13 +443,17 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 	{
 		if (config.enableCtrlHotkeys() && client.isKeyPressed(KeyCode.KC_CONTROL))
 		{
+			Character selectedCharacter = selectionManager.getPrimary();
 			if (selectedCharacter != null)
 			{
 				client.getMenu().createMenuEntry(-1)
 						.setOption(ColorUtil.prependColorTag("Relocate", Color.ORANGE))
 						.setTarget(ColorUtil.colorTag(Color.GREEN) + selectedCharacter.getName())
 						.setType(MenuAction.RUNELITE)
-						.onClick(e -> setLocation(selectedCharacter, false, true, ActiveOption.ACTIVE, LocationOption.TO_HOVERED_TILE));
+						.onClick(e ->
+						{
+							hotKeyManager.onSetLocation();
+						});
 
 				MenuEntry me = client.getMenu().createMenuEntry(-2)
 						.setOption(ColorUtil.prependColorTag("Keyframe", Color.ORANGE))
@@ -460,7 +461,11 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 						.setType(MenuAction.RUNELITE);
 
 				Menu menu = me.createSubMenu();
-				SubMenuCreator.createSubMenus(creatorsPanel.getToolBox().getTimeSheetPanel(), menu);
+				menu.createMenuEntry(0)
+						.setOption(ColorUtil.prependColorTag("Add", Color.ORANGE))
+						.setTarget(ColorUtil.colorTag(Color.WHITE) + KeyFrameType.MOVEMENT)
+						.setType(MenuAction.RUNELITE)
+						.onClick(e -> hotKeyManager.onAddMovementMenuOptionPressed());
 			}
 		}
 
@@ -534,280 +539,9 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 		}
 	}
 
-	public void setLocation(Character character, boolean initialize, boolean transplant, ActiveOption activeOption, LocationOption locationOption)
-	{
-		if (client.getGameState() != GameState.LOGGED_IN)
-		{
-			return;
-		}
-
-		boolean poh = MovementManager.useLocalLocations(client.getTopLevelWorldView());
-
-		if (poh)
-		{
-			setLocationPOH(character, initialize, transplant, activeOption, locationOption);
-			return;
-		}
-
-		setLocationWorld(character, initialize, transplant, activeOption, locationOption);
-	}
-
-	public void setLocationWorld(Character character, boolean initialize, boolean transplant, ActiveOption activeOption, LocationOption locationOption)
-	{
-		WorldView worldView = client.getTopLevelWorldView();
-		LocalPoint localPoint = null;
-		WorldPoint wp = character.getNonInstancedPoint();
-		if (wp != null)
-		{
-			Collection<WorldPoint> wps = WorldPoint.toLocalInstance(worldView, wp);
-			if (!wps.isEmpty())
-			{
-				wp = wps.iterator().next();
-				localPoint = LocalPoint.fromWorld(worldView, wp);
-			}
-		}
-
-		switch (locationOption)
-		{
-			case TO_PLAYER:
-				localPoint = client.getLocalPlayer().getLocalLocation();
-				break;
-			case TO_HOVERED_TILE:
-				Tile tile = worldView.getSelectedSceneTile();
-				if (tile == null)
-				{
-					return;
-				}
-
-				localPoint = tile.getLocalLocation();
-				break;
-			case TO_SAVED_LOCATION:
-			case TO_CURRENT_TICK:
-			default:
-				break;
-		}
-
-		if (localPoint == null || !localPoint.isInScene())
-		{
-			character.setInScene(false);
-			return;
-		}
-
-		character.setInScene(true);
-
-		if (initialize)
-		{
-			WorldPoint worldPoint = WorldPoint.fromLocalInstance(client, localPoint);
-			character.setNonInstancedPoint(worldPoint);
-			character.setInPOH(false);
-		}
-
-		if (transplant)
-		{
-			WorldPoint worldPoint = WorldPoint.fromLocalInstance(client, localPoint);
-			pathFinder.transplantSteps(character, worldView, worldPoint.getX(), worldPoint.getY());
-
-			KeyFrame kf = character.findNextKeyFrame(KeyFrameType.MOVEMENT, -TimeSheetPanel.ABSOLUTE_MAX_SEQUENCE_LENGTH);
-			if (kf != null)
-			{
-				MovementKeyFrame keyFrame = (MovementKeyFrame) kf;
-				int[][] step = keyFrame.getPath();
-				if (step.length != 0)
-				{
-					int[] first = step[0];
-					worldPoint = new WorldPoint(first[0], first[1], worldView.getPlane());
-				}
-			}
-
-			character.setNonInstancedPoint(worldPoint);
-			character.setInPOH(false);
-		}
-
-		LocalPoint finalLocalPoint = localPoint;
-		clientThread.invokeLater(() -> character.setLocation(finalLocalPoint, worldView.getPlane()));
-
-		if (locationOption == LocationOption.TO_HOVERED_TILE)
-		{
-			creatorsPanel.getToolBox().getProgrammer().register3DChanges(character);
-		}
-
-		switch (activeOption)
-		{
-			case ACTIVE:
-				character.setActive(true, true, true, clientThread);
-				break;
-			case INACTIVE:
-				character.setActive(false, false, false, clientThread);
-				break;
-			case UNCHANGED:
-				character.resetActive(clientThread);
-		}
-	}
-
-	public void setLocationPOH(Character character, boolean initialize, boolean transplant, ActiveOption activeOption, LocationOption locationOption)
-	{
-		WorldView worldView = client.getTopLevelWorldView();
-		LocalPoint localPoint = null;
-		if (character.getInstancedPoint() != null)
-		{
-			localPoint = character.getInstancedPoint();
-		}
-
-		switch (locationOption)
-		{
-			case TO_PLAYER:
-				localPoint = client.getLocalPlayer().getLocalLocation();
-				break;
-			case TO_HOVERED_TILE:
-				Tile tile = worldView.getSelectedSceneTile();
-				if (tile == null)
-				{
-					return;
-				}
-
-				localPoint = tile.getLocalLocation();
-				break;
-			case TO_CURRENT_TICK:
-			case TO_SAVED_LOCATION:
-			default:
-				break;
-		}
-
-		if (localPoint == null || !localPoint.isInScene())
-		{
-			character.setInScene(false);
-			return;
-		}
-
-		character.setInScene(true);
-
-		if (initialize)
-		{
-			character.setInstancedPoint(localPoint);
-			character.setInstancedPlane(worldView.getPlane());
-			character.setInPOH(true);
-		}
-
-		if (transplant)
-		{
-			pathFinder.transplantSteps(character, worldView, localPoint.getSceneX(), localPoint.getSceneY());
-			LocalPoint savedPoint = localPoint;
-
-			KeyFrame kf = character.findNextKeyFrame(KeyFrameType.MOVEMENT, -TimeSheetPanel.ABSOLUTE_MAX_SEQUENCE_LENGTH);
-			if (kf != null)
-			{
-				MovementKeyFrame keyFrame = (MovementKeyFrame) kf;
-				int[][] step = keyFrame.getPath();
-				if (step.length != 0)
-				{
-					int[] first = step[0];
-					savedPoint = new LocalPoint(first[0], first[1], worldView);
-				}
-			}
-
-			character.setInstancedPoint(savedPoint);
-			character.setInstancedPlane(worldView.getPlane());
-			character.setInPOH(true);
-		}
-
-		LocalPoint finalLocalPoint = localPoint;
-		clientThread.invokeLater(() -> character.setLocation(finalLocalPoint, worldView.getPlane()));
-
-		if (locationOption == LocationOption.TO_HOVERED_TILE)
-		{
-			creatorsPanel.getToolBox().getProgrammer().register3DChanges(character);
-		}
-
-		switch (activeOption)
-		{
-			case ACTIVE:
-				character.setActive(true, true, true, clientThread);
-				break;
-			case INACTIVE:
-				character.setActive(true, false, false, clientThread);
-				break;
-			case UNCHANGED:
-				character.resetActive(clientThread);
-		}
-	}
-
 	public double getCurrentTick()
 	{
 		return creatorsPanel.getToolBox().getTimeSheetPanel().getCurrentTime();
-	}
-
-	public void setModel(Character character, boolean modelMode, int modelId)
-	{
-		CKObject ckObject = character.getCkObject();
-		if (ckObject == null)
-		{
-			return;
-		}
-
-		clientThread.invokeLater(() -> {
-			if (modelMode)
-			{
-				CustomModel customModel = character.getStoredModel();
-				Model model = customModel == null ? client.loadModel(GOLDEN_CHIN) : customModel.getModel();
-				ckObject.setModel(model);
-				return;
-			}
-
-			Model model = client.loadModel(modelId);
-			ckObject.setModel(model);
-		});
-	}
-
-	public void setRadius(Character character, int radius)
-	{
-		CKObject ckObject = character.getCkObject();
-		clientThread.invoke(() -> ckObject.setRadius(radius));
-	}
-
-	public void addOrientation(Character character, int addition)
-	{
-		CKObject ckObject = character.getCkObject();
-		int orientation = ckObject.getOrientation();
-		orientation += addition;
-		if (orientation >= 2048)
-			orientation -= 2048;
-
-		if (orientation < 0)
-			orientation += 2048;
-
-		setOrientation(character, orientation);
-	}
-
-	public void setOrientation(Character character, int orientation)
-	{
-		CKObject ckObject = character.getCkObject();
-		character.getOrientationSpinner().setValue(orientation);
-		clientThread.invokeLater(() -> ckObject.setOrientation(orientation));
-	}
-
-	public void setupRLObject(Character character, boolean setHoveredTile, boolean transplant)
-	{
-		clientThread.invoke(() ->
-		{
-			CKObject ckObject = character.getCkObject();
-			client.registerRuneLiteObject(ckObject);
-
-			ckObject.setRadius((int) character.getRadiusSpinner().getValue());
-			ckObject.setOrientation((int) character.getOrientationSpinner().getValue());
-
-			boolean active = character.isActive();
-
-			setModel(character, character.isCustomMode(), (int) character.getModelSpinner().getValue());
-			character.setAnimation(client, random, AnimationType.ACTIVE, (int) character.getAnimationSpinner().getValue(), (int) character.getAnimationFrameSpinner().getValue(), config.randomizeStartFrame(), true);
-
-			LocationOption locationOption = setHoveredTile ? LocationOption.TO_HOVERED_TILE : LocationOption.TO_SAVED_LOCATION;
-			setLocation(character, true, transplant, active ? ActiveOption.ACTIVE : ActiveOption.INACTIVE, locationOption);
-
-			if (client.getGameState() == GameState.LOGGED_IN)
-			{
-				creatorsPanel.getToolBox().getProgrammer().updateProgram(character);
-			}
-		});
 	}
 
 	public void sendChatMessage(String chatMessage)
@@ -848,6 +582,8 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 				}
 
 				arrow.cloneVertices().rotateY180Ccw().scale(256, 256, 256);
+                Arrays.fill(arrow.getVerticesY(), -5);
+
 				ModelData merge = client.mergeModels(arrow, transparent);
 				merge.cloneTransparencies();
 				byte[] transparencies = merge.getFaceTransparencies();
@@ -867,38 +603,38 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 			return;
 		}
 
+		Character primary = selectionManager.getPrimary();
 		if (!client.isKeyPressed(KeyCode.KC_CONTROL)
 			|| client.isMenuOpen()
 			|| tile == null
-			|| selectedCharacter == null)
+			|| primary == null)
 		{
 			previewObject.setActive(false);
 			return;
 		}
 
-		CKObject ckObject = selectedCharacter.getCkObject();
+		CKObject ckObject = primary.getCkObject();
 		if (ckObject == null)
 		{
 			return;
 		}
 
 		boolean allowArrow = false;
-		int orientation;
+		double orientation = ckObject.getOrientation();
 		if (mousePressed)
 		{
-			final int yaw = client.getCameraYaw();
-			final int pitch = client.getCameraPitch();
+			LocalPoint hovered = tile.getLocalLocation();
+
 			Point p = client.getMouseCanvasPosition();
 			double x = p.getX() - clickX;
 			double y = -1 * (p.getY() - clickY);
-			if (Math.sqrt(x * x + y * y) < 40)
-			{
-				orientation = Rotation.roundRotation(ckObject.getOrientation());
-			}
-			else
+
+			if ((Math.sqrt(x * x + y * y) > 40)
+				&& hovered != null
+				&& draggedPoint != null)
 			{
 				allowArrow = true;
-				orientation = Rotation.getJagexDegrees(p.getX() - clickX, (p.getY() - clickY) * -1, yaw, pitch);
+				orientation = Orientation.getAngleBetween(draggedPoint, hovered);
 			}
 		}
 		else
@@ -907,26 +643,36 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 		}
 
 		Model model;
+		int renderMode = Renderable.RENDERMODE_DEFAULT;
+		int widthScale = 128;
+		int heightScale = 128;
+
 		if (mousePressed && previewArrow != null && allowArrow)
 		{
 			model = previewArrow;
 		}
 		else
 		{
-			if (selectedCharacter.isCustomMode())
+			if (primary.isCustomMode())
 			{
-				if (selectedCharacter.getStoredModel() == null)
+				if (primary.getStoredModel() == null)
 				{
-					model = client.loadModel(29757);
+					int chinchompa = 29757;
+					model = client.loadModel(chinchompa);
 				}
 				else
 				{
-					model = selectedCharacter.getStoredModel().getModel();
+					CustomModel customModel = primary.getStoredModel();
+					model = customModel.getModel();
+					CustomModelComp comp = customModel.getComp();
+					renderMode = comp.getRenderMode();
+					widthScale = comp.getWidthScale();
+					heightScale = comp.getHeightScale();
 				}
 			}
 			else
 			{
-				model = client.loadModel((int) selectedCharacter.getModelSpinner().getValue());
+				model = client.loadModel((int) primary.getModelSpinner().getValue());
 			}
 		}
 
@@ -963,8 +709,9 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 			animId = ckObject.getAnimationId();
 		}
 
-		previewObject.setModel(model);
-		previewObject.setOrientation(orientation);
+		previewObject.setModel(model, widthScale, heightScale);
+		previewObject.setRenderMode(renderMode);
+		previewObject.setOrientation((int) orientation);
 		previewObject.setAnimation(AnimationType.ACTIVE, animId);
 		previewObject.setAnimationFrame(AnimationType.ACTIVE, ckObject.getAnimationFrame(AnimationType.ACTIVE), random, false,true);
 		previewObject.setLocation(lp, client.getTopLevelWorldView().getPlane());
@@ -977,340 +724,17 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 		return creatorsPanel.getModelAnvil().getComplexPanels();
 	}
 
-	private final HotkeyListener overlayKeyListener = new HotkeyListener(() -> config.toggleOverlaysHotkey())
+	public static String getPluginVersion()
 	{
-		@Override
-		public void hotkeyPressed()
-		{
-			overlaysActive = !overlaysActive;
-			configManager.setConfiguration("creatorssuite", "overlaysActive", String.valueOf(overlaysActive));
-		}
-	};
+		PluginHubManifest.DisplayData displayData = ExternalPluginManager.getDisplayData(CreatorsPlugin.class);
 
-	private final HotkeyListener oculusOrbListener = new HotkeyListener(() -> config.toggleOrbHotkey())
-	{
-		@Override
-		public void hotkeyPressed()
+		if (displayData != null && displayData.getVersion() != null)
 		{
-			if (client.getCameraMode() == 1)
-			{
-				client.setCameraMode(0);
-				client.setFreeCameraSpeed(12);
-				return;
-			}
-
-			client.setCameraMode(1);
-			client.setFreeCameraSpeed(oculusOrbSpeed);
+			return displayData.getVersion();
 		}
-	};
 
-	private final HotkeyListener orbPreset1Listener = new HotkeyListener(() -> config.orbSpeedHotkey1())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			client.setFreeCameraSpeed(config.speedHotkey1());
-			sendChatMessage("Oculus Orb set to speed: " + config.speedHotkey1());
-		}
-	};
-
-	private final HotkeyListener orbPreset2Listener = new HotkeyListener(() -> config.orbSpeedHotkey2())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			client.setFreeCameraSpeed(config.speedHotkey2());
-			sendChatMessage("Oculus Orb set to speed: " + config.speedHotkey2());
-		}
-	};
-
-	private final HotkeyListener orbPreset3Listener = new HotkeyListener(() -> config.orbSpeedHotkey3())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			client.setFreeCameraSpeed(config.speedHotkey3());
-			sendChatMessage("Oculus Orb set to speed: " + config.speedHotkey3());
-		}
-	};
-	private final HotkeyListener quickSpawnListener = new HotkeyListener(() -> config.quickSpawnHotkey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			if (selectedCharacter != null)
-			{
-				selectedCharacter.toggleActive(clientThread);
-			}
-		}
-	};
-
-	private final HotkeyListener quickLocationListener = new HotkeyListener(() -> config.quickLocationHotkey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			if (selectedCharacter != null)
-			{
-				setLocation(selectedCharacter, false, true, ActiveOption.ACTIVE, LocationOption.TO_HOVERED_TILE);
-			}
-		}
-	};
-
-	private final HotkeyListener quickDuplicateListener = new HotkeyListener(() -> config.quickDuplicateHotkey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			if (selectedCharacter != null)
-			{
-				creatorsPanel.onDuplicatePressed(selectedCharacter, true);
-			}
-		}
-	};
-
-	private final HotkeyListener quickRotateCWListener = new HotkeyListener(() -> config.quickRotateCWHotkey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			if (selectedCharacter != null)
-			{
-				addOrientation(selectedCharacter, config.rotateDegrees().degrees * -1);
-			}
-		}
-	};
-
-	private final HotkeyListener quickRotateCCWListener = new HotkeyListener(() -> config.quickRotateCCWHotkey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			if (selectedCharacter != null)
-			{
-				addOrientation(selectedCharacter, config.rotateDegrees().degrees);
-			}
-		}
-	};
-
-	private final HotkeyListener autoLeftListener = new HotkeyListener(() -> config.rotateLeftHotkey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			autoRotateYaw = (autoRotateYaw == AutoRotate.OFF) ? AutoRotate.LEFT : AutoRotate.OFF;
-		}
-	};
-
-	private final HotkeyListener autoRightListener = new HotkeyListener(() -> config.rotateRightHotkey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			autoRotateYaw = (autoRotateYaw == AutoRotate.OFF) ? AutoRotate.RIGHT : AutoRotate.OFF;
-		}
-	};
-
-	private final HotkeyListener autoUpListener = new HotkeyListener(() -> config.rotateUpHotkey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			autoRotatePitch = (autoRotatePitch == AutoRotate.OFF) ? AutoRotate.UP : AutoRotate.OFF;
-		}
-	};
-
-	private final HotkeyListener autoDownListener = new HotkeyListener(() -> config.rotateDownHotkey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			autoRotatePitch = (autoRotatePitch == AutoRotate.OFF) ? AutoRotate.DOWN : AutoRotate.OFF;
-		}
-	};
-
-	private final HotkeyListener addProgramStepListener = new HotkeyListener(() -> config.addProgramStepHotkey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			addProgramStep = true;
-		}
-	};
-
-	private void addProgramStep()
-	{
-		creatorsPanel.getToolBox().getTimeSheetPanel().onAddMovementKeyPressed();
+		return "1000.0.0";
 	}
-
-	private final HotkeyListener removeProgramStepListener = new HotkeyListener(() -> config.removeProgramStepHotkey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			removeProgramStep();
-		}
-	};
-
-	private void removeProgramStep()
-	{
-		if (selectedCharacter == null)
-		{
-			return;
-		}
-
-		KeyFrame kf = selectedCharacter.getCurrentKeyFrame(KeyFrameType.MOVEMENT);
-		if (kf == null)
-		{
-			return;
-		}
-
-		MovementKeyFrame keyFrame = (MovementKeyFrame) kf;
-		int[][] path = keyFrame.getPath();
-
-		if (path.length == 0)
-		{
-			return;
-		}
-
-		int newLength = path.length - 1;
-		keyFrame.setPath(ArrayUtils.remove(path, newLength));
-		creatorsPanel.getToolBox().getProgrammer().register3DChanges(selectedCharacter);
-	}
-
-	private final HotkeyListener clearProgramStepListener = new HotkeyListener(() -> config.clearProgramStepHotkey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			clearProgramSteps();
-		}
-	};
-
-	private void clearProgramSteps()
-	{
-		if (selectedCharacter == null)
-		{
-			return;
-		}
-
-		KeyFrame kf = selectedCharacter.getCurrentKeyFrame(KeyFrameType.MOVEMENT);
-		if (kf == null)
-		{
-			return;
-		}
-
-		MovementKeyFrame keyFrame = (MovementKeyFrame) kf;
-		keyFrame.setPath(new int[0][2]);
-		keyFrame.setCurrentStep(0);
-	}
-
-	private final HotkeyListener addOrientationStartListener = new HotkeyListener(() -> config.orientationStart()) {
-		@Override
-		public void hotkeyPressed()
-		{
-			creatorsPanel.getToolBox().getTimeSheetPanel().onOrientationKeyPressed(OrientationHotkeyMode.SET_START);
-		}
-	};
-
-	private final HotkeyListener addOrientationGoalListener = new HotkeyListener(() -> config.orientationEnd()) {
-		@Override
-		public void hotkeyPressed()
-		{
-			creatorsPanel.getToolBox().getTimeSheetPanel().onOrientationKeyPressed(OrientationHotkeyMode.SET_GOAL);
-		}
-	};
-
-	private final HotkeyListener playPauseListener = new HotkeyListener(() -> config.playPauseHotkey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			creatorsPanel.getToolBox().getProgrammer().togglePlay();
-		}
-	};
-
-	private final HotkeyListener resetTimelineListener = new HotkeyListener(() -> config.resetTimelineHotkey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			ToolBoxFrame toolBox = creatorsPanel.getToolBox();
-			toolBox.getTimeSheetPanel().setCurrentTime(0, false);
-		}
-	};
-
-	private final HotkeyListener skipForwardListener = new HotkeyListener(() -> new Keybind(KeyEvent.VK_RIGHT, InputEvent.CTRL_DOWN_MASK))
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			creatorsPanel.getToolBox().getTimeSheetPanel().onAttributeSkipForward();
-		}
-	};
-
-	private final HotkeyListener skipBackwardListener = new HotkeyListener(() -> new Keybind(KeyEvent.VK_LEFT, InputEvent.CTRL_DOWN_MASK))
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			creatorsPanel.getToolBox().getTimeSheetPanel().onAttributeSkipPrevious();
-		}
-	};
-
-	private final HotkeyListener skipSubForwardListener = new HotkeyListener(() -> new Keybind(KeyEvent.VK_RIGHT, InputEvent.CTRL_DOWN_MASK | InputEvent.ALT_DOWN_MASK))
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			creatorsPanel.getToolBox().getTimeSheetPanel().skipListener(0.1);
-		}
-	};
-
-	private final HotkeyListener skipSubBackwardListener = new HotkeyListener(() -> new Keybind(KeyEvent.VK_LEFT, InputEvent.CTRL_DOWN_MASK | InputEvent.ALT_DOWN_MASK))
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			creatorsPanel.getToolBox().getTimeSheetPanel().skipListener(-0.1);
-		}
-	};
-
-	private final HotkeyListener saveListener = new HotkeyListener(() -> new Keybind(KeyEvent.VK_S, InputEvent.CTRL_DOWN_MASK))
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			creatorsPanel.quickSaveToFile();
-		}
-	};
-
-	private final HotkeyListener openListener = new HotkeyListener(() -> new Keybind(KeyEvent.VK_O, InputEvent.CTRL_DOWN_MASK))
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			creatorsPanel.openLoadSetupDialog();
-		}
-	};
-
-	private final HotkeyListener undoListener = new HotkeyListener(() -> new Keybind(KeyEvent.VK_Z, InputEvent.CTRL_DOWN_MASK))
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			creatorsPanel.getToolBox().getTimeSheetPanel().undo();
-		}
-	};
-
-	private final HotkeyListener redoListener = new HotkeyListener(() -> new Keybind(KeyEvent.VK_Y, InputEvent.CTRL_DOWN_MASK))
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			creatorsPanel.getToolBox().getTimeSheetPanel().redo();
-		}
-	};
 
 	public MouseWheelEvent mouseWheelMoved(MouseWheelEvent event)
 	{
@@ -1330,9 +754,25 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 				&& e.getButton() == MouseEvent.BUTTON1
 				&& client.isKeyPressed(KeyCode.KC_CONTROL))
 		{
-			mousePressed = true;
-			clickX = e.getPoint().getX();
-			clickY = e.getPoint().getY();
+			clientThread.invokeLater(() ->
+			{
+				Tile tile = client.getTopLevelWorldView().getSelectedSceneTile();
+				if (tile == null)
+				{
+					return;
+				}
+
+				LocalPoint lp = tile.getLocalLocation();
+				if (lp == null)
+				{
+					return;
+				}
+
+				mousePressed = true;
+				clickX = e.getPoint().getX();
+				clickY = e.getPoint().getY();
+				draggedPoint = lp;
+			});
 		}
 
 		return e;
@@ -1343,23 +783,46 @@ public class CreatorsPlugin extends Plugin implements MouseListener {
 	{
 		mousePressed = false;
 
-		if (config.enableCtrlHotkeys() &&
-				e.getButton() == MouseEvent.BUTTON1 &&
-				client.isKeyPressed(KeyCode.KC_CONTROL) &&
-				selectedCharacter != null)
+		if (!config.enableCtrlHotkeys() || e.getButton() != MouseEvent.BUTTON1 || !client.isKeyPressed(KeyCode.KC_CONTROL))
 		{
-			double x = e.getX() - clickX;
-			double y = -1 * (e.getY() - clickY);
-			if (Math.sqrt(x * x + y * y) < 40)
+			return e;
+		}
+
+		if (draggedPoint == null)
+		{
+			return e;
+		}
+
+		double x = e.getX() - clickX;
+		double y = -1 * (e.getY() - clickY);
+		if (Math.sqrt(x * x + y * y) < 40)
+		{
+			return e;
+		}
+
+		clientThread.invokeLater(() ->
+		{
+			WorldView worldView = client.getTopLevelWorldView();
+			Tile tile = worldView.getSelectedSceneTile();
+			if (tile == null)
 			{
-				return e;
+				return;
 			}
 
-			final int yaw = client.getCameraYaw();
-			final int pitch = client.getCameraPitch();
-			int jUnit = Rotation.getJagexDegrees(x, y, yaw, pitch);
-			setOrientation(selectedCharacter, jUnit);
-		}
+			LocalPoint lp = tile.getLocalLocation();
+			if (lp == null)
+			{
+				return;
+			}
+
+			int orientation = (int) Orientation.getAngleBetween(draggedPoint, lp);
+
+			Set<Character> selected = new HashSet<>(selectionManager.getSelected());
+			for (Character character : selected)
+			{
+				character.setOrientation(orientation);
+			}
+		});
 
 		return e;
 	}

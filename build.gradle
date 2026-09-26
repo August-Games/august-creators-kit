@@ -10,7 +10,7 @@ repositories {
 	mavenCentral()
 }
 
-def runeLiteVersion = 'latest.release'
+def runeLiteVersion = '1.12.22.1'
 
 dependencies {
 	compileOnly group: 'net.runelite', name:'client', version: runeLiteVersion
@@ -24,19 +24,9 @@ dependencies {
 }
 
 group = 'com.creatorssuite'
-version = '2.1.14'
-sourceCompatibility = '1.9'
+version = '2.3.3'
+sourceCompatibility = '11'
 
 tasks.withType(JavaCompile) {
 	options.encoding = 'UTF-8'
-}
-
-task createProperties(dependsOn: processResources) {
-	doLast {
-		new File("$buildDir/resources/main/version.txt").text = "version=$project.version"
-	}
-}
-
-classes {
-	dependsOn createProperties
 }

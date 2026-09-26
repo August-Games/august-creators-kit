@@ -2,19 +2,22 @@ package com.creatorskit.models;
 
 import com.creatorskit.Character;
 import com.creatorskit.CreatorsPlugin;
+import com.creatorskit.hotkeymanager.LocationOption;
 import com.creatorskit.saves.TransmogLoadOption;
 import com.creatorskit.saves.TransmogSave;
+import com.creatorskit.selection.SelectionCommand;
 import com.creatorskit.swing.CreatorsPanel;
 import com.creatorskit.swing.ParentPanel;
 import com.creatorskit.swing.TransmogPanel;
 import com.creatorskit.swing.anvil.ModelAnvil;
-import com.creatorskit.swing.timesheet.keyframe.AnimationKeyFrame;
+import com.creatorskit.swing.timesheet.keyframe.subtypes.AnimationKeyFrame;
 import com.creatorskit.swing.timesheet.keyframe.KeyFrame;
 import com.creatorskit.swing.timesheet.keyframe.KeyFrameType;
 import com.google.gson.Gson;
 import net.runelite.api.Client;
 import net.runelite.api.Model;
 import net.runelite.api.ModelData;
+import net.runelite.api.Renderable;
 import net.runelite.client.callback.ClientThread;
 import org.apache.commons.lang3.ArrayUtils;
 
@@ -23,7 +26,10 @@ import javax.swing.*;
 import java.io.File;
 import java.io.Reader;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Map;
+import java.util.UUID;
 
 public class ModelUtilities
 {
@@ -41,34 +47,18 @@ public class ModelUtilities
         this.gson = gson;
     }
 
-    public Model createComplexModel(DetailedModel[] detailedModels, boolean setPriority, LightingStyle lightingStyle, CustomLighting cl, boolean sendModelStats)
+    public Model createComplexModel(DetailedModel[] detailedModels, boolean setPriority, CustomLighting cl, boolean sendModelStats)
     {
         ModelData modelData = createComplexModelData(detailedModels);
-
-        if (cl == null)
-        {
-            cl = new CustomLighting(lightingStyle.getAmbient(), lightingStyle.getContrast(), lightingStyle.getX(), lightingStyle.getY(), lightingStyle.getZ());
-        }
-
-        CustomLighting finalLighting;
-        if (lightingStyle == LightingStyle.CUSTOM)
-        {
-            finalLighting = cl;
-        }
-        else
-        {
-            finalLighting = new CustomLighting(lightingStyle.getAmbient(), lightingStyle.getContrast(), lightingStyle.getX(), lightingStyle.getY(), lightingStyle.getZ());
-        }
-
         Model model;
         try
         {
             model = modelData.light(
-                    finalLighting.getAmbient(),
-                    finalLighting.getContrast(),
-                    finalLighting.getX(),
-                    finalLighting.getZ() * -1,
-                    finalLighting.getY());
+                    cl.getAmbient(),
+                    cl.getContrast(),
+                    cl.getX(),
+                    cl.getZ() * -1,
+                    cl.getY());
         }
         catch (Exception e)
         {
@@ -208,15 +198,27 @@ public class ModelUtilities
         return modelData;
     }
 
-    public void cacheToAnvil(CustomModelType type, int id, boolean all, int modelId)
+    public void cacheToAnvil(CustomModelType type, int id, String name, boolean all, int modelId)
     {
         ModelStats[] modelStats;
+        int widthScale = 128;
+        int heightScale = 128;
         DataFinder dataFinder = plugin.getDataFinder();
 
         switch (type)
         {
             case CACHE_NPC:
-                modelStats = dataFinder.findModelsForNPC(id);
+                Map.Entry<int[], ModelStats[]> set = dataFinder.findModelsForNPC(id);
+                if (set == null)
+                {
+                    sendChatMessage("Could not find the " + type + " you were looking for in the cache.");
+                    return;
+                }
+
+                int[] scale = set.getKey();
+                widthScale = scale[0];
+                heightScale = scale[1];
+                modelStats = set.getValue();
                 break;
             default:
             case CACHE_OBJECT:
@@ -243,7 +245,7 @@ public class ModelUtilities
 
         if (all)
         {
-            cacheToAnvil(modelStats, new int[0], type);
+            cacheToAnvil(name, widthScale, heightScale, modelStats, new int[0], type);
         }
         else
         {
@@ -251,7 +253,7 @@ public class ModelUtilities
             {
                 if (stats.getModelId() == modelId)
                 {
-                    cacheToAnvil(new ModelStats[]{stats}, new int[0], type);
+                    cacheToAnvil(name, widthScale, heightScale, new ModelStats[]{stats}, new int[0], type);
                     break;
                 }
             }
@@ -260,11 +262,13 @@ public class ModelUtilities
         sendChatMessage("Model sent to Anvil: " + modelStats[0].getName());
     }
 
-    public void cacheToAnvil(ModelStats[] modelStatsArray, int[] kitRecolours, CustomModelType type)
+    public void cacheToAnvil(String globalName, int widthScale, int heightScale, ModelStats[] modelStatsArray, int[] kitRecolours, CustomModelType type)
     {
         SwingUtilities.invokeLater(() ->
         {
-            CreatorsPanel creatorsPanel = plugin.getCreatorsPanel();
+            ModelAnvil modelAnvil = plugin.getCreatorsPanel().getModelAnvil();
+            LightingStyle ls = LightingStyle.fromModelType(type);
+            boolean empty = modelAnvil.getComplexPanels().isEmpty();
 
             for (ModelStats modelStats : modelStatsArray)
             {
@@ -303,7 +307,7 @@ public class ModelUtilities
                     itemRecolourFrom = ArrayUtils.addAll(itemRecolourFrom, kitRecolourFrom);
                 }
 
-                creatorsPanel.getModelAnvil().createComplexPanel(
+                modelAnvil.createComplexPanel(
                         name,
                         id,
                         group,
@@ -317,9 +321,13 @@ public class ModelUtilities
                         false);
             }
 
-            ModelAnvil modelAnvil = creatorsPanel.getModelAnvil();
             modelAnvil.generateNames();
             modelAnvil.updateRenderPanel();
+
+            if (empty)
+            {
+                modelAnvil.updateGlobalSettings(ls, false, globalName, widthScale, heightScale);
+            }
         });
     }
 
@@ -329,29 +337,41 @@ public class ModelUtilities
         Thread thread = new Thread(() ->
         {
             ModelStats[] modelStats;
-            CustomModelComp comp;
-            CustomLighting lighting;
+            LightingStyle ls;
+            int renderMode = Renderable.RENDERMODE_DEFAULT;
+            int widthScale = 128;
+            int heightScale = 128;
 
             switch (type)
             {
                 case CACHE_NPC:
-                    modelStats = dataFinder.findModelsForNPC(id);
+                    Map.Entry<int[], ModelStats[]> set = dataFinder.findModelsForNPC(id);
+                    if (set == null)
+                    {
+                        sendChatMessage("Could not find the " + type + " you were looking for in the cache.");
+                        return;
+                    }
+
+                    int[] scale = set.getKey();
+                    widthScale = scale[0];
+                    heightScale = scale[1];
+                    modelStats = set.getValue();
+                    ls = LightingStyle.ACTOR;
                     break;
                 default:
                 case CACHE_OBJECT:
                     modelStats = dataFinder.findModelsForObject(id, modelType, LightingStyle.DEFAULT, false);
+                    ls = LightingStyle.DEFAULT;
                     break;
                 case CACHE_GROUND_ITEM:
-                    modelStats = dataFinder.findModelsForGroundItem(id, CustomModelType.CACHE_GROUND_ITEM);
-                    break;
                 case CACHE_MAN_WEAR:
-                    modelStats = dataFinder.findModelsForGroundItem(id, CustomModelType.CACHE_MAN_WEAR);
-                    break;
                 case CACHE_WOMAN_WEAR:
-                    modelStats = dataFinder.findModelsForGroundItem(id, CustomModelType.CACHE_WOMAN_WEAR);
+                    modelStats = dataFinder.findModelsForGroundItem(id, type);
+                    ls = LightingStyle.DEFAULT;
                     break;
                 case CACHE_SPOTANIM:
                     modelStats = dataFinder.findSpotAnim(id);
+                    ls = LightingStyle.SPOTANIM;
             }
 
             if (modelStats == null || modelStats.length == 0)
@@ -360,40 +380,14 @@ public class ModelUtilities
                 return;
             }
 
-            switch (type)
-            {
-                case CACHE_NPC:
-                    lighting = new CustomLighting(64, 850, -30, -30, 50);
-                    comp = new CustomModelComp(0, CustomModelType.CACHE_NPC, id, modelStats, null, null, null, LightingStyle.ACTOR, lighting, false, name);
-                    break;
-                default:
-                case CACHE_OBJECT:
-                    lighting = modelStats[0].getLighting();
-                    comp = new CustomModelComp(0, CustomModelType.CACHE_OBJECT, id, modelStats, null, null, null, LightingStyle.CUSTOM, lighting, false, name);
-                    break;
-                case CACHE_GROUND_ITEM:
-                    lighting = new CustomLighting(64, 768, -50, -50, 10);
-                    comp = new CustomModelComp(0, CustomModelType.CACHE_GROUND_ITEM, id, modelStats, null, null, null, LightingStyle.DEFAULT, lighting, false, name);
-                    break;
-                case CACHE_MAN_WEAR:
-                    lighting = new CustomLighting(64, 768, -50, -50, 10);
-                    comp = new CustomModelComp(0, CustomModelType.CACHE_MAN_WEAR, id, modelStats, null, null, null, LightingStyle.DEFAULT, lighting, false, name);
-                    break;
-                case CACHE_WOMAN_WEAR:
-                    lighting = new CustomLighting(64, 768, -50, -50, 10);
-                    comp = new CustomModelComp(0, CustomModelType.CACHE_WOMAN_WEAR, id, modelStats, null, null, null, LightingStyle.DEFAULT, lighting, false, name);
-                    break;
-                case CACHE_SPOTANIM:
-                    lighting = modelStats[0].getLighting();
-                    comp = new CustomModelComp(0, CustomModelType.CACHE_SPOTANIM, id, modelStats, null, null, null, LightingStyle.CUSTOM, lighting, false, name);
-                    break;
-            }
+            CustomLighting cl = CustomLighting.fromLightingStyle(ls);
+            CustomModelComp comp = new CustomModelComp(type, id, widthScale, heightScale, modelStats, null, null, null, renderMode, cl, false, name);
 
             clientThread.invokeLater(() ->
             {
-                Model model = constructModelFromCache(modelStats, new int[0], false, LightingStyle.CUSTOM, lighting);
+                Model model = constructModelFromCache(modelStats, new int[0], false, cl);
                 CustomModel customModel = new CustomModel(model, comp);
-                addCustomModel(customModel, false);
+                addCustomModels(new CustomModel[]{customModel}, false);
                 sendChatMessage("Model stored: " + name);
 
                 if (addObject)
@@ -401,6 +395,7 @@ public class ModelUtilities
                     CreatorsPanel creatorsPanel = plugin.getCreatorsPanel();
                     Character character = creatorsPanel.createCharacter(
                             ParentPanel.SIDE_PANEL,
+                            UUID.randomUUID().toString(),
                             name,
                             7699,
                             customModel,
@@ -409,7 +404,7 @@ public class ModelUtilities
                             animId,
                             -1,
                             60 * size,
-                            new KeyFrame[KeyFrameType.getTotalFrameTypes()][],
+                            new KeyFrame[KeyFrameType.getTotalCharacterKeyFrameTypes()][],
                             KeyFrameType.createDefaultSummary(),
                             creatorsPanel.getRandomColor(),
                             false,
@@ -418,9 +413,10 @@ public class ModelUtilities
                             -1,
                             false,
                             false,
-                            false);
+                            LocationOption.TO_SAVED_LOCATION,
+                            new int[]{0, 0});
 
-                    SwingUtilities.invokeLater(() -> creatorsPanel.addPanel(ParentPanel.SIDE_PANEL, character, true, false));
+                    SwingUtilities.invokeLater(() -> creatorsPanel.addPanel(ParentPanel.SIDE_PANEL, character, true, false, SelectionCommand.SELECT_ONLY));
 
                     if (akf != null)
                     {
@@ -433,15 +429,10 @@ public class ModelUtilities
         thread.start();
     }
 
-    public Model constructModelFromCache(ModelStats[] modelStatsArray, int[] kitRecolours, boolean player, LightingStyle ls, CustomLighting cl)
+    public Model constructModelFromCache(ModelStats[] modelStatsArray, int[] kitRecolours, boolean player, CustomLighting cl)
     {
         ModelData md = constructModelDataFromCache(modelStatsArray, kitRecolours, player);
-        if (ls == LightingStyle.CUSTOM)
-        {
-            return client.mergeModels(md).light(cl.getAmbient(), cl.getContrast(), cl.getX(), -cl.getZ(), cl.getY());
-        }
-
-        return client.mergeModels(md).light(ls.getAmbient(), ls.getContrast(), ls.getX(), -ls.getZ(), ls.getY());
+        return client.mergeModels(md).light(cl.getAmbient(), cl.getContrast(), cl.getX(), -cl.getZ(), cl.getY());
     }
 
     public ModelData constructModelDataFromCache(ModelStats[] modelStatsArray, int[] kitRecolours, boolean player)
@@ -515,33 +506,10 @@ public class ModelUtilities
         {
             CustomModelComp comp = customModel.getComp();
             sendChatMessage("Model sent to Anvil: " + comp.getName());
-
-            CustomLighting cl;
-            LightingStyle lightingStyle = comp.getLightingStyle();
-            if (lightingStyle == LightingStyle.CUSTOM)
+            if (modelAnvil.getComplexPanels().isEmpty())
             {
-                cl = comp.getCustomLighting();
+                modelAnvil.updateGlobalSettings(comp);
             }
-            else
-            {
-                cl = new CustomLighting(
-                        lightingStyle.getAmbient(),
-                        lightingStyle.getContrast(),
-                        lightingStyle.getX(),
-                        lightingStyle.getY(),
-                        lightingStyle.getZ());
-            }
-
-            modelAnvil.setLightingSettings(
-                    comp.getLightingStyle(),
-                    cl.getAmbient(),
-                    cl.getContrast(),
-                    cl.getX(),
-                    cl.getY(),
-                    cl.getZ());
-
-            modelAnvil.getPriorityCheckBox().setSelected(comp.isPriority());
-            modelAnvil.getNameField().setText(comp.getName());
 
             if (comp.getModelStats() == null)
             {
@@ -552,7 +520,7 @@ public class ModelUtilities
                 return;
             }
 
-            cacheToAnvil(comp.getModelStats(), comp.getKitRecolours(), comp.getType());
+            cacheToAnvil(comp.getName(), comp.getWidthScale(), comp.getHeightScale(), comp.getModelStats(), comp.getKitRecolours(), comp.getType());
         });
     }
 
@@ -564,6 +532,29 @@ public class ModelUtilities
         {
             Reader reader = Files.newBufferedReader(file.toPath());
             CustomModelComp comp = gson.fromJson(reader, CustomModelComp.class);
+            boolean empty = modelAnvil.getComplexPanels().isEmpty();
+
+            if (comp.getRenderMode() == null)
+            {
+                int renderMode = Renderable.RENDERMODE_DEFAULT;
+                CustomModelType type = comp.getType();
+                switch (type)
+                {
+                    case CACHE_PLAYER:
+                    case FORGED:
+                    case BLENDER:
+                        renderMode = Renderable.RENDERMODE_SORTED_NO_DEPTH;
+                        break;
+                }
+
+                comp.setRenderMode(renderMode);
+            }
+
+            if (comp.getWidthScale() == null || comp.getHeightScale() == null)
+            {
+                comp.setWidthScale(128);
+                comp.setHeightScale(128);
+            }
 
             SwingUtilities.invokeLater(() ->
             {
@@ -575,21 +566,11 @@ public class ModelUtilities
                 modelAnvil.updateRenderPanel();
             });
 
-            LightingStyle ls = comp.getLightingStyle();
-            CustomLighting cl = comp.getCustomLighting();
-            if (cl == null)
-                cl = new CustomLighting(ls.getAmbient(), ls.getContrast(), ls.getX(), ls.getY(), ls.getZ());
+            if (empty)
+            {
+                modelAnvil.updateGlobalSettings(comp);
+            }
 
-            modelAnvil.setLightingSettings(
-                    comp.getLightingStyle(),
-                    cl.getAmbient(),
-                    cl.getContrast(),
-                    cl.getX(),
-                    cl.getY(),
-                    cl.getZ());
-
-            modelAnvil.getPriorityCheckBox().setSelected(comp.isPriority());
-            modelAnvil.getNameField().setText(comp.getName());
             reader.close();
         }
         catch (Exception e)
@@ -604,16 +585,39 @@ public class ModelUtilities
         {
             Reader reader = Files.newBufferedReader(file.toPath());
             CustomModelComp comp = gson.fromJson(reader, CustomModelComp.class);
+
+            if (comp.getRenderMode() == null)
+            {
+                int renderMode = Renderable.RENDERMODE_DEFAULT;
+                CustomModelType type = comp.getType();
+                switch (type)
+                {
+                    case CACHE_PLAYER:
+                    case FORGED:
+                    case BLENDER:
+                        renderMode = Renderable.RENDERMODE_SORTED_NO_DEPTH;
+                }
+
+                comp.setRenderMode(renderMode);
+            }
+
+            if (comp.getWidthScale() == null || comp.getHeightScale() == null)
+            {
+                comp.setWidthScale(128);
+                comp.setHeightScale(128);
+            }
+
             clientThread.invokeLater(() ->
             {
-                LightingStyle ls = comp.getLightingStyle();
                 CustomLighting cl = comp.getCustomLighting();
                 if (cl == null)
-                    cl = new CustomLighting(ls.getAmbient(), ls.getContrast(), ls.getX(), ls.getY(), ls.getZ());
+                {
+                    cl = CustomLighting.fromLightingStyle(LightingStyle.DEFAULT);
+                }
 
-                Model model = createComplexModel(comp.getDetailedModels(), comp.isPriority(), comp.getLightingStyle(), cl, true);
+                Model model = createComplexModel(comp.getDetailedModels(), comp.isPriority(), cl, true);
                 CustomModel customModel = new CustomModel(model, comp);
-                addCustomModel(customModel, false);
+                addCustomModels(new CustomModel[]{customModel}, false);
             });
             reader.close();
         }
@@ -641,6 +645,27 @@ public class ModelUtilities
                     detailedModels = creatorsPanel.getModelOrganizer().modelToDetailedPanels(comp);
                     comp.setDetailedModels(detailedModels);
                 }
+
+                if (comp.getRenderMode() == null)
+                {
+                    int renderMode = Renderable.RENDERMODE_DEFAULT;
+                    CustomModelType type = comp.getType();
+                    switch (type)
+                    {
+                        case CACHE_PLAYER:
+                        case FORGED:
+                        case BLENDER:
+                            renderMode = Renderable.RENDERMODE_SORTED_NO_DEPTH;
+                    }
+
+                    comp.setRenderMode(renderMode);
+                }
+
+                if (comp.getWidthScale() == null || comp.getHeightScale() == null)
+                {
+                    comp.setWidthScale(128);
+                    comp.setHeightScale(128);
+                }
             }
 
             reader.close();
@@ -665,13 +690,15 @@ public class ModelUtilities
             {
                 clientThread.invokeLater(() ->
                 {
-                    LightingStyle ls = comp.getLightingStyle();
                     CustomLighting cl = comp.getCustomLighting();
                     if (cl == null)
-                        cl = new CustomLighting(ls.getAmbient(), ls.getContrast(), ls.getX(), ls.getY(), ls.getZ());
-                    Model model = createComplexModel(comp.getDetailedModels(), comp.isPriority(), comp.getLightingStyle(), cl, false);
+                    {
+                        cl = CustomLighting.fromLightingStyle(LightingStyle.DEFAULT);
+                    }
+
+                    Model model = createComplexModel(comp.getDetailedModels(), comp.isPriority(), cl, false);
                     CustomModel customModel = new CustomModel(model, comp);
-                    addCustomModel(customModel, false);
+                    addCustomModels(new CustomModel[]{customModel}, false);
                     transmogPanel.setTransmog(customModel);
                 });
             }
@@ -682,16 +709,31 @@ public class ModelUtilities
         }
     }
 
-    public void addCustomModel(CustomModel customModel, boolean setComboBox)
+    public void addCustomModels(CustomModel[] models, boolean setComboBox)
     {
-        SwingUtilities.invokeLater(() -> plugin.getCreatorsPanel().addModelOption(customModel, setComboBox));
-        plugin.getStoredModels().add(customModel);
+        SwingUtilities.invokeLater(() -> plugin.getCreatorsPanel().addModelOptions(models, setComboBox));
+
+        for (CustomModel customModel : models)
+        {
+            plugin.getStoredModels().add(customModel);
+        }
     }
 
-    public void removeCustomModel(CustomModel customModel)
+    public void removeCustomModels(CustomModel[] models)
     {
-        plugin.getCreatorsPanel().removeModelOption(customModel);
-        plugin.getStoredModels().remove(customModel);
+        plugin.getCreatorsPanel().removeModelOptions(models);
+
+        for (CustomModel customModel : models)
+        {
+            plugin.getStoredModels().remove(customModel);
+        }
+    }
+
+    public void clearCustomModels()
+    {
+        ArrayList<CustomModel> models = plugin.getStoredModels();
+        plugin.getCreatorsPanel().removeModelOptions(models.toArray(new CustomModel[0]));
+        plugin.getStoredModels().clear();
     }
 
     public void updatePanelComboBoxes()

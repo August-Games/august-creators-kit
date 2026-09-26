@@ -9,14 +9,15 @@ import lombok.Setter;
 @Setter
 public class CustomModelComp
 {
-    private int customModelId;
     private CustomModelType type;
     private int modelId;
+    private Integer widthScale;
+    private Integer heightScale;
     private ModelStats[] modelStats;
     private int[] kitRecolours;
     private DetailedModel[] detailedModels;
     private BlenderModel blenderModel;
-    private LightingStyle lightingStyle;
+    private Integer renderMode;
     private CustomLighting customLighting;
     private boolean priority;
     private String name;

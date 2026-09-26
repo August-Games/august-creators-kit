@@ -2,13 +2,16 @@ package com.creatorskit.programming;
 
 import com.creatorskit.*;
 import com.creatorskit.Character;
+import com.creatorskit.hotkeymanager.LocationOption;
 import com.creatorskit.models.*;
-import com.creatorskit.models.datatypes.SpotanimData;
+import com.creatorskit.models.datatypes.SpotAnimDefinition;
+import com.creatorskit.programming.camera.CameraManager;
 import com.creatorskit.programming.orientation.Orientation;
 import com.creatorskit.programming.orientation.OrientationAction;
 import com.creatorskit.swing.timesheet.TimeSheetPanel;
 import com.creatorskit.programming.orientation.OrientationInstruction;
 import com.creatorskit.swing.timesheet.keyframe.*;
+import com.creatorskit.swing.timesheet.keyframe.subtypes.*;
 import lombok.Getter;
 import lombok.Setter;
 import net.runelite.api.*;
@@ -31,6 +34,7 @@ public class Programmer
     private final TimeSheetPanel timeSheetPanel;
     private final DataFinder dataFinder;
     private final ModelUtilities modelUtilities;
+    private final CameraManager cameraManager;
 
     private int clientTickAtLastProgramTick = 0;
     private final int GOLDEN_CHIN = 29757;
@@ -43,7 +47,7 @@ public class Programmer
     private boolean triggerPause = false;
 
     @Inject
-    public Programmer(Client client, CreatorsConfig config, ClientThread clientThread, CreatorsPlugin plugin, TimeSheetPanel timeSheetPanel, DataFinder dataFinder, ModelUtilities modelUtilities)
+    public Programmer(Client client, CreatorsConfig config, ClientThread clientThread, CreatorsPlugin plugin, TimeSheetPanel timeSheetPanel, DataFinder dataFinder, ModelUtilities modelUtilities, CameraManager cameraManager)
     {
         this.client = client;
         this.config = config;
@@ -52,6 +56,7 @@ public class Programmer
         this.timeSheetPanel = timeSheetPanel;
         this.dataFinder = dataFinder;
         this.modelUtilities = modelUtilities;
+        this.cameraManager = cameraManager;
     }
 
     @Subscribe
@@ -71,6 +76,7 @@ public class Programmer
                 incrementSubTime();
             }
 
+            cameraManager.tick();
             updateCharacter3D();
             if (clientTickAtLastProgramTick == 0 && triggerPause)
             {
@@ -172,7 +178,7 @@ public class Programmer
             {
                 setAnimation(character, false, 0, 0);
                 setOrientation(character, currentClientTick);
-                plugin.setLocation(character, false, false, ActiveOption.UNCHANGED, LocationOption.TO_SAVED_LOCATION);
+                character.setLocation(client, clientThread, this, false, false, ActiveOption.UNCHANGED, LocationOption.TO_SAVED_LOCATION);
                 return;
             }
 
@@ -202,7 +208,7 @@ public class Programmer
 
             setAnimation(character, false, 0, 0);
             setOrientationStatic(character);
-            plugin.setLocation(character, false, false, ActiveOption.UNCHANGED, LocationOption.TO_SAVED_LOCATION);
+            character.setLocation(client, clientThread, this, false, false, ActiveOption.UNCHANGED, LocationOption.TO_SAVED_LOCATION);
             return;
         }
 
@@ -397,7 +403,7 @@ public class Programmer
             return;
         }
 
-        character.setLocation(lp, keyFrame.getPlane());
+        character.updateLocation(lp, keyFrame.getPlane());
     }
 
     /**
@@ -423,7 +429,7 @@ public class Programmer
         }
 
         int orientation = getOrientation(keyFrame, ticksPassed, duration);
-        character.setOrientation(orientation);
+        character.updateCKOOrientation(orientation);
     }
 
     /**
@@ -477,13 +483,13 @@ public class Programmer
         if (kf == null)
         {
             int orientation = (int) character.getOrientationSpinner().getValue();
-            character.setOrientation(orientation);
+            character.updateCKOOrientation(orientation);
             return;
         }
 
         OrientationKeyFrame keyFrame = (OrientationKeyFrame) kf;
         int orientation = getOrientationStatic(keyFrame);
-        character.setOrientation(orientation);
+        character.updateCKOOrientation(orientation);
     }
 
     /**
@@ -543,7 +549,7 @@ public class Programmer
         {
             if (ckObject.getOrientation() != orientationGoal)
             {
-                character.setOrientation(orientationGoal);
+                character.updateCKOOrientation(orientationGoal);
             }
 
             return;
@@ -578,7 +584,7 @@ public class Programmer
                 newOrientation = Orientation.boundOrientation(orientation - turnSpeed);
             }
 
-            character.setOrientation(newOrientation);
+            character.updateCKOOrientation(newOrientation);
         }
     }
 
@@ -917,6 +923,7 @@ public class Programmer
         {
             triggerPause = false;
             playing = true;
+            cameraManager.setCancelled(false);
             timeSheetPanel.setPlayButtonIcon(true);
             double currentTime = timeSheetPanel.getCurrentTime();
 
@@ -987,6 +994,7 @@ public class Programmer
         {
             updateProgram(characters.get(i), tick);
         }
+        cameraManager.updateProgram(tick, false);
     }
 
     /**
@@ -1002,7 +1010,7 @@ public class Programmer
             Character character = characters.get(i);
             KeyFrame[] currentFrames = character.getCurrentFrames();
 
-            KeyFrame currentMovement = currentFrames[KeyFrameType.getIndex(KeyFrameType.MOVEMENT)];
+            KeyFrame currentMovement = currentFrames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.MOVEMENT)];
             double lastMovementTick = -TimeSheetPanel.ABSOLUTE_MAX_SEQUENCE_LENGTH;
             if (currentMovement != null)
             {
@@ -1021,7 +1029,7 @@ public class Programmer
             }
 
 
-            KeyFrame currentAnimation = currentFrames[KeyFrameType.getIndex(KeyFrameType.ANIMATION)];
+            KeyFrame currentAnimation = currentFrames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.ANIMATION)];
             double lastAnimationTick = -TimeSheetPanel.ABSOLUTE_MAX_SEQUENCE_LENGTH;
             if (currentAnimation != null)
             {
@@ -1039,7 +1047,7 @@ public class Programmer
             }
 
 
-            KeyFrame currentSpawn = currentFrames[KeyFrameType.getIndex(KeyFrameType.SPAWN)];
+            KeyFrame currentSpawn = currentFrames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.SPAWN)];
             double lastSpawnTick = -TimeSheetPanel.ABSOLUTE_MAX_SEQUENCE_LENGTH;
             if (currentSpawn != null)
             {
@@ -1057,7 +1065,7 @@ public class Programmer
             }
 
 
-            KeyFrame currentModel = currentFrames[KeyFrameType.getIndex(KeyFrameType.MODEL)];
+            KeyFrame currentModel = currentFrames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.MODEL)];
             double lastModelTick = -TimeSheetPanel.ABSOLUTE_MAX_SEQUENCE_LENGTH;
             if (currentModel != null)
             {
@@ -1075,7 +1083,7 @@ public class Programmer
             }
 
 
-            KeyFrame currentOrientation = currentFrames[KeyFrameType.getIndex(KeyFrameType.ORIENTATION)];
+            KeyFrame currentOrientation = currentFrames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.ORIENTATION)];
             double lastOrientationTick = -TimeSheetPanel.ABSOLUTE_MAX_SEQUENCE_LENGTH;
             if (currentOrientation != null)
             {
@@ -1093,7 +1101,7 @@ public class Programmer
             }
 
 
-            KeyFrame currentText = currentFrames[KeyFrameType.getIndex(KeyFrameType.TEXT)];
+            KeyFrame currentText = currentFrames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.TEXT)];
             double lastTextTick = -TimeSheetPanel.ABSOLUTE_MAX_SEQUENCE_LENGTH;
             if (currentText != null)
             {
@@ -1110,7 +1118,7 @@ public class Programmer
             }
 
 
-            KeyFrame currentOverhead = currentFrames[KeyFrameType.getIndex(KeyFrameType.OVERHEAD)];
+            KeyFrame currentOverhead = currentFrames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.OVERHEAD)];
             double lastOverheadTick = -TimeSheetPanel.ABSOLUTE_MAX_SEQUENCE_LENGTH;
             if (currentOverhead != null)
             {
@@ -1127,7 +1135,7 @@ public class Programmer
             }
 
 
-            KeyFrame currentHealth = currentFrames[KeyFrameType.getIndex(KeyFrameType.HEALTH)];
+            KeyFrame currentHealth = currentFrames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.HEALTH)];
             double lastHealthTick = -TimeSheetPanel.ABSOLUTE_MAX_SEQUENCE_LENGTH;
             if (currentHealth != null)
             {
@@ -1146,7 +1154,7 @@ public class Programmer
 
             for (KeyFrameType spotanimType : KeyFrameType.SPOTANIM_TYPES)
             {
-                KeyFrame currentSpotAnim = currentFrames[KeyFrameType.getIndex(spotanimType)];
+                KeyFrame currentSpotAnim = currentFrames[KeyFrameType.getCharacterKeyFrameIndex(spotanimType)];
                 double lastSpotAnimTick = -TimeSheetPanel.ABSOLUTE_MAX_SEQUENCE_LENGTH;
                 if (currentSpotAnim != null)
                 {
@@ -1167,7 +1175,7 @@ public class Programmer
 
             for (KeyFrameType hitsplatType : KeyFrameType.HITSPLAT_TYPES)
             {
-                KeyFrame currentHitsplat = currentFrames[KeyFrameType.getIndex(hitsplatType)];
+                KeyFrame currentHitsplat = currentFrames[KeyFrameType.getCharacterKeyFrameIndex(hitsplatType)];
                 double lastHitsplatTick = Integer.MIN_VALUE;
                 if (currentHitsplat != null)
                 {
@@ -1184,6 +1192,8 @@ public class Programmer
                 }
             }
         }
+
+        cameraManager.updateProgramOnTick(currentTime);
     }
 
     private void registerSpawnChanges(Character character)
@@ -1310,7 +1320,7 @@ public class Programmer
         }
 
         int orientation = getOrientationStatic(keyFrame);
-        character.setOrientation(orientation);
+        character.updateCKOOrientation(orientation);
     }
 
     public KeyFrameType findLastOrientation(Character character)
@@ -1394,7 +1404,7 @@ public class Programmer
 
         if (modelKeyFrame == null)
         {
-            plugin.setModel(character, character.isCustomMode(), (int) character.getModelSpinner().getValue());
+            character.resetToBaseModel(client, clientThread);
             ckObject.setRadius((int) character.getRadiusSpinner().getValue());
             return;
         }
@@ -1406,7 +1416,7 @@ public class Programmer
             CustomModel customModel = modelKeyFrame.getCustomModel();
             if (customModel == null)
             {
-                clientThread.invokeLater(() -> ckObject.setModel(client.loadModel(GOLDEN_CHIN)));
+                clientThread.invokeLater(() -> ckObject.setModel(client.loadModel(GOLDEN_CHIN), 128, 128));
                 return;
             }
 
@@ -1416,7 +1426,8 @@ public class Programmer
                 return;
             }
 
-            ckObject.setModel(model);
+            CustomModelComp comp = customModel.getComp();
+            ckObject.setModel(model, comp.getWidthScale(), comp.getHeightScale());
         }
         else
         {
@@ -1428,7 +1439,7 @@ public class Programmer
 
             final int id = modelId;
 
-            clientThread.invokeLater(() -> ckObject.setModel(client.loadModel(id)));
+            clientThread.invokeLater(() -> ckObject.setModel(client.loadModel(id), 128, 128));
         }
     }
 
@@ -1487,7 +1498,7 @@ public class Programmer
             }
         }
 
-        SpotanimData data = dataFinder.getSpotAnimData(spotAnimId);
+        SpotAnimDefinition data = dataFinder.getSpotAnimData(spotAnimId);
 
         if (data != null)
         {
@@ -1521,9 +1532,9 @@ public class Programmer
                     ms.setTranslateZ(height);
                 }
 
-                Model model = modelUtilities.constructModelFromCache(stats, new int[0], false, LightingStyle.CUSTOM, cl);
+                Model model = modelUtilities.constructModelFromCache(stats, new int[0], false, cl);
 
-                ckObject.setModel(model);
+                ckObject.setModel(model, 128, 128);
                 setActiveAnimationFrame(ckObject, data.getAnimationId(), currentTime, startTick, 0, loop, false, true);
             });
         }

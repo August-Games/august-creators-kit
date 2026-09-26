@@ -4,17 +4,21 @@ import com.creatorskit.Character;
 import com.creatorskit.CreatorsConfig;
 import com.creatorskit.CreatorsPlugin;
 import com.creatorskit.CKObject;
-import com.creatorskit.models.datatypes.NPCData;
+import com.creatorskit.hotkeymanager.LocationOption;
+import com.creatorskit.models.datatypes.NpcDefinition;
 import com.creatorskit.models.datatypes.PlayerAnimationType;
 import com.creatorskit.models.datatypes.WeaponAnimData;
 import com.creatorskit.models.exporters.ModelExporter;
 import com.creatorskit.programming.AnimationType;
+import com.creatorskit.selection.SelectionCommand;
+import com.creatorskit.selection.SelectionManager;
+import com.creatorskit.selection.SelectionOrigin;
 import com.creatorskit.swing.CreatorsPanel;
 import com.creatorskit.swing.ParentPanel;
-import com.creatorskit.swing.timesheet.keyframe.AnimationKeyFrame;
+import com.creatorskit.swing.timesheet.keyframe.subtypes.AnimationKeyFrame;
 import com.creatorskit.swing.timesheet.keyframe.KeyFrame;
 import com.creatorskit.swing.timesheet.keyframe.KeyFrameType;
-import com.creatorskit.swing.timesheet.keyframe.SpotAnimKeyFrame;
+import com.creatorskit.swing.timesheet.keyframe.subtypes.SpotAnimKeyFrame;
 import lombok.Getter;
 import net.runelite.api.*;
 import net.runelite.api.Menu;
@@ -27,8 +31,7 @@ import org.apache.commons.lang3.ArrayUtils;
 import javax.inject.Inject;
 import javax.swing.*;
 import java.awt.*;
-import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.*;
 import java.util.List;
 
 public class ModelGetter
@@ -41,12 +44,13 @@ public class ModelGetter
     @Getter
     private final ModelExporter modelExporter;
     private final ModelUtilities modelUtilities;
+    private final SelectionManager selectionManager;
 
     private CKObject exportObject;
     private final String DEFAULT_NAME = "Name";
 
     @Inject
-    public ModelGetter(Client client, ClientThread clientThread, CreatorsConfig config, CreatorsPlugin plugin, DataFinder dataFinder, ModelExporter modelExporter, ModelUtilities modelUtilities)
+    public ModelGetter(Client client, ClientThread clientThread, CreatorsConfig config, CreatorsPlugin plugin, DataFinder dataFinder, ModelExporter modelExporter, ModelUtilities modelUtilities, SelectionManager selectionManager)
     {
         this.client = client;
         this.clientThread = clientThread;
@@ -55,6 +59,7 @@ public class ModelGetter
         this.dataFinder = dataFinder;
         this.modelExporter = modelExporter;
         this.modelUtilities = modelUtilities;
+        this.selectionManager = selectionManager;
     }
 
     public void addCharacterMenuEntries(Tile tile)
@@ -73,19 +78,54 @@ public class ModelGetter
                             .setOption(ColorUtil.prependColorTag("Select", Color.ORANGE))
                             .setTarget(ColorUtil.colorTag(Color.GREEN) + character.getName())
                             .setType(MenuAction.RUNELITE)
-                            .onClick(e -> plugin.getCreatorsPanel().setSelectedCharacter(character));
+                            .onClick(e ->
+                            {
+                                if (client.isKeyPressed(KeyCode.KC_CONTROL))
+                                {
+                                    selectionManager.add(character, SelectionOrigin.DIRECT);
+                                    return;
+                                }
+
+                                selectionManager.select(character, SelectionOrigin.DIRECT);
+                            });
 
                     Menu menu = menuEntry.createSubMenu();
 
                     menu.createMenuEntry(0)
                             .setOption(ColorUtil.prependColorTag("Export 3D", Color.WHITE))
                             .setType(MenuAction.RUNELITE)
-                            .onClick(e -> exportRLObject(character, false));
+                            .onClick(e ->
+                            {
+                                if (client.isKeyPressed(KeyCode.KC_CONTROL))
+                                {
+                                    Set<Character> set = new HashSet<>(selectionManager.getSelected());
+                                    for (Character c : set)
+                                    {
+                                        exportRLObject(c, false);
+                                    }
+                                    return;
+                                }
+
+                                exportRLObject(character, false);
+                            });
 
                     menu.createMenuEntry(0)
                             .setOption(ColorUtil.prependColorTag("Export Animation", Color.WHITE))
                             .setType(MenuAction.RUNELITE)
-                            .onClick(e -> exportRLObject(character, true));
+                            .onClick(e ->
+                            {
+                                if (client.isKeyPressed(KeyCode.KC_CONTROL))
+                                {
+                                    Set<Character> set = new HashSet<>(selectionManager.getSelected());
+                                    for (Character c : set)
+                                    {
+                                        exportRLObject(c, true);
+                                    }
+                                    return;
+                                }
+
+                                exportRLObject(character, true);
+                            });
                 }
             }
         }
@@ -292,35 +332,21 @@ public class ModelGetter
 
     public void storeNPC(NPC npc, ModelMenuOption menuOption)
     {
-        NPCComposition composition = npc.getTransformedComposition();
-        NpcOverrides overrides = npc.getModelOverrides();
-
-        ModelStats[] modelStats;
-        if (overrides != null)
-        {
-            modelStats = dataFinder.findModelsForNPC(npc.getId(), overrides);
-        }
-        else if (composition != null)
-        {
-            modelStats = dataFinder.findModelsForNPC(npc.getId(), composition);
-        }
-        else
-        {
-            modelStats = dataFinder.findModelsForNPC(npc.getId());
-        }
-
+        ModelStats[] modelStats = dataFinder.findModelsForNPC(npc);
         if (modelStats == null || modelStats.length == 0)
         {
-            plugin.sendChatMessage("Could not find this NPC in the cache.");
-            plugin.sendChatMessage("This may be because Creator's Kit's cache dumps have not yet been updated to the latest game update.");
+            sendErrorMessage("NPC");
             return;
         }
 
         String name = npc.getName();
+        NPCComposition comp = npc.getComposition();
+        int widthScale = comp.getWidthScale();
+        int heightScale = comp.getHeightScale();
 
         if (menuOption == ModelMenuOption.ANVIL)
         {
-            handleAnvilOption(modelStats, new int[0], CustomModelType.CACHE_NPC, name);
+            handleAnvilOption(name, widthScale, heightScale, modelStats, new int[0], CustomModelType.CACHE_NPC);
             return;
         }
 
@@ -328,7 +354,7 @@ public class ModelGetter
         SpotAnimKeyFrame[] spkfs = new SpotAnimKeyFrame[0];
         if (menuOption == ModelMenuOption.STORE_ADD_ANIMATE)
         {
-            NPCData npcData = dataFinder.findNPCData(npc);
+            NpcDefinition npcData = dataFinder.findNPCData(npc);
             if (npcData != null)
             {
                 akf = new AnimationKeyFrame(
@@ -370,8 +396,7 @@ public class ModelGetter
                 i++;
             }
         }
-
-        handleStoreOptions(modelStats, menuOption, CustomModelType.CACHE_NPC, name, new int[0], false, LightingStyle.ACTOR, npc.getOrientation(), npc.getPoseAnimation(), akf, spkfs);
+        handleStoreOptions(widthScale, heightScale, modelStats, menuOption, CustomModelType.CACHE_NPC, name, new int[0], false, npc.getRenderMode(), LightingStyle.ACTOR, npc.getOrientation(), npc.getPoseAnimation(), akf, spkfs);
     }
 
     public void exportNPC(NPC npc, boolean exportAnimation)
@@ -391,7 +416,7 @@ public class ModelGetter
         }
 
         int npcId = npc.getId();
-
+        NPCComposition comp = npc.getComposition();
         String name = npc.getName();
 
         if (config.vertexColours())
@@ -402,28 +427,16 @@ public class ModelGetter
             {
                 Thread thread = new Thread(() ->
                 {
-                    NPCComposition composition = npc.getTransformedComposition();
-
-                    ModelStats[] modelStats;
-                    if (composition == null)
-                    {
-                        modelStats = dataFinder.findModelsForNPC(npc.getId());
-                    }
-                    else
-                    {
-                        modelStats = dataFinder.findModelsForNPC(npc.getId(), composition);
-                    }
-
+                    ModelStats[] modelStats = dataFinder.findModelsForNPC(npc);
                     if (modelStats == null || modelStats.length == 0)
                     {
-                        plugin.sendChatMessage("Could not find this NPC in the cache.");
-                        plugin.sendChatMessage("This may be because Creator's Kit's cache dumps have not yet been updated to the latest game update.");
+                        sendErrorMessage("NPC");
                         return;
                     }
 
                     clientThread.invokeLater(() ->
                     {
-                        initiateAnimationExport(finalAnimId, name, bm, modelStats, new int[0], false, LightingStyle.ACTOR, null);
+                        initiateAnimationExport(finalAnimId, name, comp.getWidthScale(), comp.getHeightScale(), bm, modelStats, new int[0], false, CustomLighting.fromLightingStyle(LightingStyle.ACTOR));
                     });
                 });
                 thread.start();
@@ -436,6 +449,7 @@ public class ModelGetter
                     npc.setPoseAnimation(-1);
                 }
 
+                bm.scale(comp.getWidthScale(), comp.getHeightScale());
                 modelExporter.saveToFile(name, bm);
             }
         }
@@ -486,11 +500,17 @@ public class ModelGetter
 
             Thread thread = new Thread(() ->
             {
-                ModelStats[] modelStats = dataFinder.findModelsForNPC(npcId);
+                Map.Entry<int[], ModelStats[]> set = dataFinder.findModelsForNPC(npcId);
+                if (set == null)
+                {
+                    sendErrorMessage("NPC");
+                    return;
+                }
+
+                ModelStats[] modelStats = set.getValue();
                 if (modelStats == null || modelStats.length == 0)
                 {
-                    plugin.sendChatMessage("Could not find this NPC in the cache.");
-                    plugin.sendChatMessage("This may be because Creator's Kit's cache dumps have not yet been updated to the latest game update.");
+                    sendErrorMessage("NPC");
                     return;
                 }
 
@@ -518,10 +538,11 @@ public class ModelGetter
 
                     if (exportAnimation)
                     {
-                        initiateAnimationExport(finalAnimId, name, bm, modelStats, new int[0], false, LightingStyle.ACTOR, null);
+                        initiateAnimationExport(finalAnimId, name, comp.getWidthScale(), comp.getHeightScale(), bm, modelStats, new int[0], false, CustomLighting.fromLightingStyle(LightingStyle.ACTOR));
                     }
                     else
                     {
+                        bm.scale(comp.getWidthScale(), comp.getHeightScale());
                         modelExporter.saveToFile(name, bm);
                     }
                 });
@@ -537,8 +558,7 @@ public class ModelGetter
             ModelStats[] modelStats = dataFinder.findSpotAnim(spotAnim.getId());
             if (modelStats == null || modelStats.length == 0)
             {
-                plugin.sendChatMessage("Could not find this Spotanim in the cache.");
-                plugin.sendChatMessage("This may be because Creator's Kit's cache dumps have not yet been updated to the latest game update.");
+                sendErrorMessage("SpotAnim");
                 continue;
             }
 
@@ -546,7 +566,7 @@ public class ModelGetter
             clientThread.invokeLater(() ->
             {
                 CustomLighting lighting = modelStats[0].getLighting();
-                CustomModelComp comp = new CustomModelComp(0, CustomModelType.CACHE_SPOTANIM, spotAnim.getId(), modelStats, null, null, null, LightingStyle.CUSTOM, lighting, false, name);
+                CustomModelComp comp = new CustomModelComp(CustomModelType.CACHE_SPOTANIM, spotAnim.getId(), 128, 128, modelStats, null, null, null, spotAnim.getRenderMode(), lighting, false, name);
 
                 ModelData modelData = client.loadModelData(modelStats[0].getModelId()).cloneColors().cloneVertices();
                 short[] recolFrom = modelStats[0].getRecolourFrom();
@@ -558,12 +578,13 @@ public class ModelGetter
                 int anim = dataFinder.getLastAnim();
                 Model model = modelData.light(lighting.getAmbient(), lighting.getContrast(), lighting.getX(), lighting.getZ() * -1, lighting.getY());
                 CustomModel customModel = new CustomModel(model, comp);
-                modelUtilities.addCustomModel(customModel, false);
+                modelUtilities.addCustomModels(new CustomModel[]{customModel}, false);
                 plugin.sendChatMessage("Model stored: " + name + "; Anim: " + anim + "; Ambient/Contrast: " + lighting.getAmbient() + "/" + lighting.getContrast());
                 CreatorsPanel creatorsPanel = plugin.getCreatorsPanel();
 
                 Character character = creatorsPanel.createCharacter(
                         ParentPanel.SIDE_PANEL,
+                        UUID.randomUUID().toString(),
                         name,
                         7699,
                         customModel,
@@ -572,7 +593,7 @@ public class ModelGetter
                         anim,
                         -1,
                         60,
-                        new KeyFrame[KeyFrameType.getTotalFrameTypes()][],
+                        new KeyFrame[KeyFrameType.getTotalCharacterKeyFrameTypes()][],
                         KeyFrameType.createDefaultSummary(),
                         creatorsPanel.getRandomColor(),
                         false,
@@ -581,9 +602,10 @@ public class ModelGetter
                         -1,
                         false,
                         false,
-                        false);
+                        LocationOption.TO_SAVED_LOCATION,
+                        new int[]{0, 0});
 
-                SwingUtilities.invokeLater(() -> creatorsPanel.addPanel(ParentPanel.SIDE_PANEL, character, true, false));
+                SwingUtilities.invokeLater(() -> creatorsPanel.addPanel(ParentPanel.SIDE_PANEL, character, true, false, SelectionCommand.SELECT_ONLY));
             });
         }
     }
@@ -659,17 +681,21 @@ public class ModelGetter
             animId = player.getPoseAnimation();
         }
 
+        Animation animation = client.loadAnimation(animId);
+        int leftHandItem = animation.getLeftHandItem();
+        int rightHandItem = animation.getRightHandItem();
+
         String name = player.getName();
         if (player == client.getLocalPlayer())
         {
             name = "Local Player";
         }
 
-        ModelStats[] modelStats = dataFinder.findModelsForPlayer(false, comp.getGender() == 0, items, animId, fSpotAnims);
+        ModelStats[] modelStats = dataFinder.findModelsForPlayer(false, comp.getGender() == 0, items, animId, leftHandItem, rightHandItem, fSpotAnims);
 
         if (menuOption == ModelMenuOption.ANVIL)
         {
-            handleAnvilOption(modelStats, colours, CustomModelType.CACHE_PLAYER, name);
+            handleAnvilOption(name, 128, 128, modelStats, colours, CustomModelType.CACHE_PLAYER);
             return;
         }
 
@@ -751,7 +777,7 @@ public class ModelGetter
             }
         }
 
-        handleStoreOptions(modelStats, menuOption, CustomModelType.CACHE_PLAYER, name, colours, true, LightingStyle.ACTOR, player.getOrientation(), animId, akf, spkfs);
+        handleStoreOptions(128, 128, modelStats, menuOption, CustomModelType.CACHE_PLAYER, name, colours, true, player.getRenderMode(), LightingStyle.ACTOR, player.getOrientation(), animId, akf, spkfs);
     }
 
     public void exportPlayer(Player player, boolean exportAnimation)
@@ -778,6 +804,10 @@ public class ModelGetter
             player.setAnimation(-1);
             player.setPoseAnimation(-1);
         }
+
+        Animation animation = client.loadAnimation(finalAnimId);
+        int leftHandItem = animation.getLeftHandItem();
+        int rightHandItem = animation.getRightHandItem();
 
         Model model = player.getModel();
         int vCount = model.getVerticesCount();
@@ -842,10 +872,10 @@ public class ModelGetter
             {
                 Thread thread = new Thread(() ->
                 {
-                    ModelStats[] modelStats = dataFinder.findModelsForPlayer(false, comp.getGender() == 0, items, finalAnimId, fSpotAnims);
+                    ModelStats[] modelStats = dataFinder.findModelsForPlayer(false, comp.getGender() == 0, items, finalAnimId, leftHandItem, rightHandItem, fSpotAnims);
                     clientThread.invokeLater(() ->
                     {
-                        initiateAnimationExport(finalAnimId, finalName, bm, modelStats, comp.getColors(), true, LightingStyle.ACTOR, null);
+                        initiateAnimationExport(finalAnimId, finalName, 128, 128, bm, modelStats, comp.getColors(), true, CustomLighting.fromLightingStyle(LightingStyle.ACTOR));
                     });
                 });
                 thread.start();
@@ -859,7 +889,7 @@ public class ModelGetter
         {
             Thread thread = new Thread(() ->
             {
-                ModelStats[] modelStats = dataFinder.findModelsForPlayer(false, comp.getGender() == 0, items, finalAnimId, fSpotAnims);
+                ModelStats[] modelStats = dataFinder.findModelsForPlayer(false, comp.getGender() == 0, items, finalAnimId, leftHandItem, rightHandItem, fSpotAnims);
 
                 clientThread.invokeLater(() ->
                 {
@@ -879,7 +909,7 @@ public class ModelGetter
 
                     if (exportAnimation)
                     {
-                        initiateAnimationExport(finalAnimId, finalName, bm, modelStats, comp.getColors(), true, LightingStyle.ACTOR, null);
+                        initiateAnimationExport(finalAnimId, finalName, 128, 128, bm, modelStats, comp.getColors(), true, CustomLighting.fromLightingStyle(LightingStyle.ACTOR));
                     }
                     else
                     {
@@ -940,24 +970,23 @@ public class ModelGetter
         ModelStats[] modelStats = dataFinder.findModelsForObject(objectId, modelType, ls, false);
         if (modelStats == null || modelStats.length == 0)
         {
-            plugin.sendChatMessage("Could not find this Object in the cache.");
-            plugin.sendChatMessage("This may be because Creator's Kit's cache dumps have not yet been updated to the latest game update.");
+            sendErrorMessage("Object");
             return;
         }
 
         if (menuOption == ModelMenuOption.ANVIL)
         {
-            handleAnvilOption(modelStats, new int[0], CustomModelType.CACHE_OBJECT, name);
+            handleAnvilOption(name, 128, 128, modelStats, new int[0], CustomModelType.CACHE_OBJECT);
             return;
         }
 
         if (dynamicObject)
         {
-            handleStoreOptions(modelStats, menuOption, type, name, new int[0], false, ls, orientation, animationId, null, new SpotAnimKeyFrame[0]);
+            handleStoreOptions(128, 128, modelStats, menuOption, type, name, new int[0], false, model.getRenderMode(), ls, orientation, animationId, null, new SpotAnimKeyFrame[0]);
             return;
         }
 
-        handleStoreOptions(model, modelStats, menuOption, type, name, new int[0], false, ls, orientation, animationId, null, new SpotAnimKeyFrame[0]);
+        handleStoreOptions(model, modelStats, menuOption, type, name, new int[0], false, model.getRenderMode(), ls, orientation, animationId, null, new SpotAnimKeyFrame[0]);
     }
 
     public void exportObject(String name, int objectId, int modelType, Model model)
@@ -1016,8 +1045,7 @@ public class ModelGetter
                 ModelStats[] modelStats = dataFinder.findModelsForObject(objectId, modelType, LightingStyle.DEFAULT, false);
                 if (modelStats == null || modelStats.length == 0)
                 {
-                    plugin.sendChatMessage("Could not find this Object in the cache.");
-                    plugin.sendChatMessage("This may be because Creator's Kit's cache dumps have not yet been updated to the latest game update.");
+                    sendErrorMessage("Object");
                     return;
                 }
 
@@ -1104,14 +1132,13 @@ public class ModelGetter
                                 ModelStats[] modelStats = dataFinder.findModelsForObject(objectId, modelType, LightingStyle.DYNAMIC, false);
                                 if (modelStats == null || modelStats.length == 0)
                                 {
-                                    plugin.sendChatMessage("Could not find this Object in the cache.");
-                                    plugin.sendChatMessage("This may be because Creator's Kit's cache dumps have not yet been updated to the latest game update.");
+                                    sendErrorMessage("Object");
                                     return;
                                 }
 
                                 clientThread.invokeLater(() ->
                                 {
-                                    initiateAnimationExport(animId, name, bm, modelStats, new int[0], false, LightingStyle.DYNAMIC, null);
+                                    initiateAnimationExport(animId, name, 128, 128, bm, modelStats, new int[0], false, CustomLighting.fromLightingStyle(LightingStyle.DYNAMIC));
                                 });
                             });
                             thread.start();
@@ -1128,8 +1155,7 @@ public class ModelGetter
                             ModelStats[] modelStats = dataFinder.findModelsForObject(objectId, modelType, LightingStyle.DYNAMIC, false);
                             if (modelStats == null || modelStats.length == 0)
                             {
-                                plugin.sendChatMessage("Could not find this Object in the cache.");
-                                plugin.sendChatMessage("This may be because Creator's Kit's cache dumps have not yet been updated to the latest game update.");
+                                sendErrorMessage("Object");
                                 return;
                             }
 
@@ -1162,7 +1188,7 @@ public class ModelGetter
 
                                 if (exportAnimation)
                                 {
-                                    initiateAnimationExport(animId, name, bm, modelStats, new int[0], false, LightingStyle.DYNAMIC, null);
+                                    initiateAnimationExport(animId, name, 128, 128, bm, modelStats, new int[0], false, CustomLighting.fromLightingStyle(LightingStyle.DYNAMIC));
                                 }
                                 else
                                 {
@@ -1199,11 +1225,14 @@ public class ModelGetter
                     clientThread.invokeLater(() ->
                     {
                         CustomModelComp comp = character.getStoredModel().getComp();
+                        int widthScale = comp.getWidthScale();
+                        int heightScale = comp.getHeightScale();
+
                         switch (comp.getType())
                         {
                             case FORGED:
                                 ModelData modelData = modelUtilities.createComplexModelData(comp.getDetailedModels());
-                                initiateAnimationExport(animId, name, modelData.light(), bm);
+                                initiateAnimationExport(animId, name, widthScale, heightScale, modelData.light(), bm);
                                 break;
                             default:
                             case CACHE_NPC:
@@ -1212,10 +1241,10 @@ public class ModelGetter
                             case CACHE_GROUND_ITEM:
                             case CACHE_MAN_WEAR:
                             case CACHE_WOMAN_WEAR:
-                                initiateAnimationExport(animId, name, bm, comp.getModelStats(), new int[0], false, comp.getLightingStyle(), comp.getCustomLighting());
+                                initiateAnimationExport(animId, name, widthScale, heightScale, bm, comp.getModelStats(), new int[0], false, comp.getCustomLighting());
                                 break;
                             case CACHE_PLAYER:
-                                initiateAnimationExport(animId, name, bm, comp.getModelStats(), comp.getKitRecolours(), true, comp.getLightingStyle(), comp.getCustomLighting());
+                                initiateAnimationExport(animId, name, widthScale, heightScale, bm, comp.getModelStats(), comp.getKitRecolours(), true, comp.getCustomLighting());
                                 break;
                             case BLENDER:
                                 plugin.sendChatMessage("This model already came from Blender.");
@@ -1242,7 +1271,7 @@ public class ModelGetter
 
                     clientThread.invokeLater(() ->
                     {
-                        initiateAnimationExport(animId, name, bm, modelStats, new int[0], false, LightingStyle.DEFAULT, null);
+                        initiateAnimationExport(animId, name, 128, 128, bm, modelStats, new int[0], false, CustomLighting.fromLightingStyle(LightingStyle.DEFAULT));
                     });
                 }
             }
@@ -1357,6 +1386,9 @@ public class ModelGetter
                             bm = comp.getBlenderModel();
                     }
 
+                    int widthScale = comp.getWidthScale();
+                    int heightScale = comp.getHeightScale();
+
                     if (exportAnimation)
                     {
                         switch (comp.getType())
@@ -1364,7 +1396,7 @@ public class ModelGetter
                             case FORGED:
                                 if (modelData != null)
                                 {
-                                    initiateAnimationExport(animId, name, modelData.light(), bm);
+                                    initiateAnimationExport(animId, name, widthScale, heightScale, modelData.light(), bm);
                                 }
                                 break;
                             default:
@@ -1374,10 +1406,10 @@ public class ModelGetter
                             case CACHE_GROUND_ITEM:
                             case CACHE_MAN_WEAR:
                             case CACHE_WOMAN_WEAR:
-                                initiateAnimationExport(animId, name, bm, comp.getModelStats(), new int[0], false, comp.getLightingStyle(), comp.getCustomLighting());
+                                initiateAnimationExport(animId, name, widthScale, heightScale, bm, comp.getModelStats(), new int[0], false, comp.getCustomLighting());
                                 break;
                             case CACHE_PLAYER:
-                                initiateAnimationExport(animId, name, bm, comp.getModelStats(), comp.getKitRecolours(), true, comp.getLightingStyle(), comp.getCustomLighting());
+                                initiateAnimationExport(animId, name, widthScale, heightScale, bm, comp.getModelStats(), comp.getKitRecolours(), true, comp.getCustomLighting());
                                 break;
                             case BLENDER:
                                 plugin.sendChatMessage("This model already came from Blender.");
@@ -1386,6 +1418,7 @@ public class ModelGetter
                     }
                     else
                     {
+                        bm.scale(widthScale, heightScale);
                         modelExporter.saveToFile(name, bm);
                     }
 
@@ -1427,7 +1460,7 @@ public class ModelGetter
 
                     if (exportAnimation)
                     {
-                        initiateAnimationExport(animId, name, bm, modelStats, new int[0], false, LightingStyle.DEFAULT, null);
+                        initiateAnimationExport(animId, name, 128, 128, bm, modelStats, new int[0], false, CustomLighting.fromLightingStyle(LightingStyle.DEFAULT));
                     }
                     else
                     {
@@ -1476,18 +1509,17 @@ public class ModelGetter
         ModelStats[] modelStats = dataFinder.findModelsForGroundItem(itemId, CustomModelType.CACHE_GROUND_ITEM);
         if (modelStats == null || modelStats.length == 0)
         {
-            plugin.sendChatMessage("Could not find this Item in the cache.");
-            plugin.sendChatMessage("This may be because Creator's Kit's cache dumps have not yet been updated to the latest game update.");
+            sendErrorMessage("Item");
             return;
         }
 
         if (menuOption == ModelMenuOption.ANVIL)
         {
-            handleAnvilOption(modelStats, new int[0], CustomModelType.CACHE_GROUND_ITEM, name);
+            handleAnvilOption(name, 128, 128, modelStats, new int[0], CustomModelType.CACHE_GROUND_ITEM);
             return;
         }
 
-        handleStoreOptions(model, modelStats, menuOption, CustomModelType.CACHE_GROUND_ITEM, name, new int[0], false, LightingStyle.DEFAULT, 0, -1, null, new SpotAnimKeyFrame[0]);
+        handleStoreOptions(model, modelStats, menuOption, CustomModelType.CACHE_GROUND_ITEM, name, new int[0], false, model.getRenderMode(), LightingStyle.DEFAULT, 0, -1, null, new SpotAnimKeyFrame[0]);
     }
 
     public void exportGroundItem(String name, int itemId, Model model)
@@ -1547,8 +1579,7 @@ public class ModelGetter
                 ModelStats[] modelStats = dataFinder.findModelsForGroundItem(itemId, CustomModelType.CACHE_GROUND_ITEM);
                 if (modelStats == null || modelStats.length == 0)
                 {
-                    plugin.sendChatMessage("Could not find this Item in the cache.");
-                    plugin.sendChatMessage("This may be because Creator's Kit's cache dumps have not yet been updated to the latest game update.");
+                    sendErrorMessage("Item");
                     return;
                 }
 
@@ -1575,39 +1606,38 @@ public class ModelGetter
         }
     }
 
-    private void handleAnvilOption(ModelStats[] modelStats, int[] kitRecolours, CustomModelType type, String name)
+    private void handleAnvilOption(String name, int widthScale, int heightScale, ModelStats[] modelStats, int[] kitRecolours, CustomModelType type)
     {
         clientThread.invokeLater(() ->
         {
-            modelUtilities.cacheToAnvil(modelStats, kitRecolours, type);
+            modelUtilities.cacheToAnvil(name, widthScale, heightScale, modelStats, kitRecolours, type);
             plugin.sendChatMessage("Model sent to Anvil: " + name);
         });
     }
 
-    private void handleStoreOptions(ModelStats[] modelStats, ModelMenuOption menuOption, CustomModelType customModelType, String name, int[] kitRecolours, boolean player, LightingStyle ls, int orientation, int poseAnimation, AnimationKeyFrame keyFrame, SpotAnimKeyFrame[] spkfs)
+    private void handleStoreOptions(int widthScale, int heightScale, ModelStats[] modelStats, ModelMenuOption menuOption, CustomModelType customModelType, String name, int[] kitRecolours, boolean player, int renderMode, LightingStyle ls, int orientation, int poseAnimation, AnimationKeyFrame keyFrame, SpotAnimKeyFrame[] spkfs)
     {
         clientThread.invokeLater(() ->
         {
-            Model model = modelUtilities.constructModelFromCache(modelStats, kitRecolours, player, ls, null);
-            store(model, modelStats, menuOption, customModelType, name, kitRecolours, ls, orientation, poseAnimation, keyFrame, spkfs);
+            Model model = modelUtilities.constructModelFromCache(modelStats, kitRecolours, player, CustomLighting.fromLightingStyle(ls));
+            store(model, widthScale, heightScale, modelStats, menuOption, customModelType, name, kitRecolours, renderMode, ls, orientation, poseAnimation, keyFrame, spkfs);
         });
     }
 
-    private void handleStoreOptions(Model model, ModelStats[] modelStats, ModelMenuOption menuOption, CustomModelType customModelType, String name, int[] kitRecolours, boolean player, LightingStyle ls, int orientation, int poseAnimation, AnimationKeyFrame keyFrame, SpotAnimKeyFrame[] spkfs)
+    private void handleStoreOptions(Model model, ModelStats[] modelStats, ModelMenuOption menuOption, CustomModelType customModelType, String name, int[] kitRecolours, boolean player, int renderMode, LightingStyle ls, int orientation, int poseAnimation, AnimationKeyFrame keyFrame, SpotAnimKeyFrame[] spkfs)
     {
         Thread thread = new Thread(() ->
         {
-            store(model, modelStats, menuOption, customModelType, name, kitRecolours, ls, orientation, poseAnimation, keyFrame, spkfs);
+            store(model, 128, 128, modelStats, menuOption, customModelType, name, kitRecolours, renderMode, ls, orientation, poseAnimation, keyFrame, spkfs);
         });
         thread.start();
     }
 
-    private void store(Model model, ModelStats[] modelStats, ModelMenuOption menuOption, CustomModelType customModelType, String name, int[] kitRecolours, LightingStyle ls, int orientation, int poseAnimation, AnimationKeyFrame keyFrame, SpotAnimKeyFrame[] spkfs)
+    private void store(Model model, int widthScale, int heightScale, ModelStats[] modelStats, ModelMenuOption menuOption, CustomModelType customModelType, String name, int[] kitRecolours, int renderMode, LightingStyle ls, int orientation, int poseAnimation, AnimationKeyFrame keyFrame, SpotAnimKeyFrame[] spkfs)
     {
-        CustomLighting lighting = new CustomLighting(ls.getAmbient(), ls.getContrast(), ls.getX(), ls.getY(), ls.getZ());
-        CustomModelComp comp = new CustomModelComp(0, customModelType, 7699, modelStats, kitRecolours, null, null, ls, lighting, false, name);
+        CustomModelComp comp = new CustomModelComp(customModelType, 7699, widthScale, heightScale, modelStats, kitRecolours, null, null, renderMode, CustomLighting.fromLightingStyle(ls), false, name);
         CustomModel customModel = new CustomModel(model, comp);
-        modelUtilities.addCustomModel(customModel, false);
+        modelUtilities.addCustomModels(new CustomModel[]{customModel}, false);
         plugin.sendChatMessage("Model stored: " + name);
         CreatorsPanel creatorsPanel = plugin.getCreatorsPanel();
 
@@ -1620,6 +1650,7 @@ public class ModelGetter
         {
             Character character = creatorsPanel.createCharacter(
                     ParentPanel.SIDE_PANEL,
+                    UUID.randomUUID().toString(),
                     name,
                     7699,
                     customModel,
@@ -1628,7 +1659,7 @@ public class ModelGetter
                     poseAnimation,
                     -1,
                     60,
-                    new KeyFrame[KeyFrameType.getTotalFrameTypes()][],
+                    new KeyFrame[KeyFrameType.getTotalCharacterKeyFrameTypes()][],
                     KeyFrameType.createDefaultSummary(),
                     creatorsPanel.getRandomColor(),
                     false,
@@ -1637,9 +1668,10 @@ public class ModelGetter
                     -1,
                     false,
                     false,
-                    false);
+                    LocationOption.TO_SAVED_LOCATION,
+                    new int[]{0, 0});
 
-            SwingUtilities.invokeLater(() -> creatorsPanel.addPanel(ParentPanel.SIDE_PANEL, character, true, false));
+            SwingUtilities.invokeLater(() -> creatorsPanel.addPanel(ParentPanel.SIDE_PANEL, character, true, false, SelectionCommand.SELECT_ONLY));
 
             if (menuOption == ModelMenuOption.STORE_ADD_ANIMATE)
             {
@@ -1657,11 +1689,23 @@ public class ModelGetter
 
     public void exportModelFromCache(CustomModelType type, int id, String name, boolean all, int modelId)
     {
+        int widthScale = 128;
+        int heightScale = 128;
         ModelStats[] modelStats = new ModelStats[0];
         switch (type)
         {
             case CACHE_NPC:
-                modelStats = dataFinder.findModelsForNPC(id);
+                Map.Entry<int[], ModelStats[]> set = dataFinder.findModelsForNPC(id);
+                if (set == null)
+                {
+                    sendErrorMessage("NPC");
+                    return;
+                }
+
+                int[] scale = set.getKey();
+                widthScale = scale[0];
+                heightScale = scale[1];
+                modelStats = set.getValue();
                 break;
             case CACHE_OBJECT:
                 modelStats = dataFinder.findModelsForObject(id, 0, LightingStyle.DEFAULT, true);
@@ -1677,8 +1721,7 @@ public class ModelGetter
 
         if (modelStats == null || modelStats.length == 0)
         {
-            plugin.sendChatMessage("Could not find this element in the cache.");
-            plugin.sendChatMessage("This may be because Creator's Kit's cache dumps have not yet been updated to the latest game update.");
+            sendErrorMessage("Element");
             return;
         }
 
@@ -1695,6 +1738,8 @@ public class ModelGetter
         }
 
         ModelStats[] finalModelStats = modelStats;
+        int finalWidthScale = widthScale;
+        int finalHeightScale = heightScale;
         clientThread.invokeLater(() ->
         {
             ModelData modelData = modelUtilities.constructModelDataFromCache(finalModelStats, new int[0], false);
@@ -1761,23 +1806,24 @@ public class ModelGetter
                         renderPriorities);
             }
 
+            bm.scale(finalWidthScale, finalHeightScale);
             modelExporter.saveToFile(name, bm);
         });
     }
 
-    private void initiateAnimationExport(int animId, String name, BlenderModel bm, ModelStats[] modelStats, int[] kitRecolours, boolean player, LightingStyle ls, CustomLighting cl)
+    private void initiateAnimationExport(int animId, String name, int widthScale, int heightScale, BlenderModel bm, ModelStats[] modelStats, int[] kitRecolours, boolean player, CustomLighting cl)
     {
-        Model model = modelUtilities.constructModelFromCache(modelStats, kitRecolours, player, ls, cl);
-        initiateAnimationExport(animId, name, model, bm);
+        Model model = modelUtilities.constructModelFromCache(modelStats, kitRecolours, player, cl);
+        initiateAnimationExport(animId, name, widthScale, heightScale, model, bm);
     }
 
-    private void initiateAnimationExport(int animId, String name, Model model, BlenderModel bm)
+    private void initiateAnimationExport(int animId, String name, int widthScale, int heightScale, Model model, BlenderModel bm)
     {
         exportObject = new CKObject(client);
         client.registerRuneLiteObject(exportObject);
 
         exportObject.setAnimation(AnimationType.ACTIVE, animId);
-        exportObject.setModel(model);
+        exportObject.setModel(model, widthScale, heightScale);
         exportObject.setActive(true);
         exportObject.setLocation(client.getLocalPlayer().getLocalLocation(), client.getTopLevelWorldView().getPlane());
 
@@ -1863,5 +1909,11 @@ public class ModelGetter
         bm.setClientTicks(clientTicks);
         bm.setAnimVertices(animVerts);
         modelExporter.saveToFile(name, bm);
+    }
+
+    private void sendErrorMessage(String type)
+    {
+        plugin.sendChatMessage("Could not find any models for this " + type + " in the cache.");
+        plugin.sendChatMessage("If this should have associated models, please let ScreteMonge know.");
     }
 }

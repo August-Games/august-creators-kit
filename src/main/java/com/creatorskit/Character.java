@@ -1,16 +1,22 @@
 package com.creatorskit;
 
+import com.creatorskit.hotkeymanager.LocationOption;
 import com.creatorskit.models.CustomModel;
+import com.creatorskit.models.CustomModelComp;
 import com.creatorskit.programming.AnimationType;
+import com.creatorskit.programming.MovementManager;
+import com.creatorskit.programming.PathFinder;
+import com.creatorskit.programming.Programmer;
+import com.creatorskit.programming.orientation.Orientation;
+import com.creatorskit.swing.ObjectPanel;
 import com.creatorskit.swing.ParentPanel;
 import com.creatorskit.swing.timesheet.TimeSheetPanel;
 import com.creatorskit.swing.timesheet.keyframe.*;
+import com.creatorskit.swing.timesheet.keyframe.subtypes.*;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.Setter;
-import net.runelite.api.Animation;
-import net.runelite.api.Client;
-import net.runelite.api.Constants;
+import net.runelite.api.*;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.callback.ClientThread;
@@ -19,15 +25,14 @@ import org.apache.commons.lang3.ArrayUtils;
 import javax.swing.*;
 import javax.swing.tree.DefaultMutableTreeNode;
 import java.awt.*;
-import java.util.Arrays;
-import java.util.Objects;
-import java.util.Random;
+import java.util.*;
 
 @Getter
 @Setter
 @AllArgsConstructor
 public class Character
 {
+    private String id;
     private String name;
     private boolean active;
     private boolean inScene;
@@ -43,7 +48,7 @@ public class Character
     private boolean inPOH;
     private CustomModel storedModel;
     private ParentPanel parentPanel;
-    private JPanel objectPanel;
+    private ObjectPanel objectPanel;
     private boolean customMode;
     private JTextField nameField;
     private JComboBox<CustomModel> comboBox;
@@ -63,6 +68,11 @@ public class Character
     public String toString()
     {
         return name;
+    }
+
+    public void rerollId()
+    {
+        id = UUID.randomUUID().toString();
     }
 
     public void setPlaying(boolean playing)
@@ -110,32 +120,237 @@ public class Character
      */
     public void updateProgram(double tick)
     {
-        for (KeyFrameType type : KeyFrameType.ALL_KEYFRAME_TYPES)
+        for (KeyFrameType type : KeyFrameType.CHARACTER_KEY_FRAME_TYPES)
         {
             KeyFrame current = findPreviousKeyFrame(type, tick, true);
             setCurrentKeyFrame(current, type);
         }
     }
 
-    public void setOrientation(int orientation)
+    public void setupRLObject(Client client, ClientThread clientThread, Programmer programmer, Random random, boolean randomizeStartFrame, LocationOption locationOption, boolean transplant, int[] diff, int renderMode)
     {
-        if (ckObject != null)
+        clientThread.invoke(() ->
         {
-            ckObject.setOrientation(orientation);
+            client.registerRuneLiteObject(ckObject);
+
+            ckObject.setRadius((int) radiusSpinner.getValue());
+            ckObject.setOrientation((int) orientationSpinner.getValue());
+            ckObject.setRenderMode(renderMode);
+
+            resetToBaseModel(client, clientThread);
+            setAnimation(client, random, AnimationType.ACTIVE, (int) animationSpinner.getValue(), (int) animationFrameSpinner.getValue(), randomizeStartFrame, true);
+
+            setLocation(client, clientThread, programmer, true, transplant, active ? ActiveOption.ACTIVE : ActiveOption.INACTIVE, locationOption, diff);
+
+            if (client.getGameState() == GameState.LOGGED_IN)
+            {
+                programmer.updateProgram(this);
+            }
+        });
+    }
+
+    public void setLocation(Client client, ClientThread clientThread, Programmer programmer, boolean initialize, boolean transplant, ActiveOption activeOption, LocationOption locationOption)
+    {
+        setLocation(client, clientThread, programmer, initialize, transplant, activeOption, locationOption, new int[]{0, 0});
+    }
+
+    public void setLocation(Client client, ClientThread clientThread, Programmer programmer, boolean initialize, boolean transplant, ActiveOption activeOption, LocationOption locationOption, int[] diff)
+    {
+        if (client.getGameState() != GameState.LOGGED_IN)
+        {
+            return;
         }
 
-        if (spotAnim1 != null)
+        boolean poh = MovementManager.useLocalLocations(client.getTopLevelWorldView());
+
+        if (poh)
         {
-            spotAnim1.setOrientation(orientation);
+            setLocationPOH(client, clientThread, programmer, initialize, transplant, activeOption, locationOption, diff);
+            return;
         }
 
-        if (spotAnim2 != null)
+        setLocationWorld(client, clientThread, programmer, initialize, transplant, activeOption, locationOption, diff);
+    }
+
+    public void setLocationWorld(Client client, ClientThread clientThread, Programmer programmer, boolean initialize, boolean transplant, ActiveOption activeOption, LocationOption locationOption, int[] diff)
+    {
+        WorldView worldView = client.getTopLevelWorldView();
+        LocalPoint localPoint = null;
+        if (nonInstancedPoint != null)
         {
-            spotAnim2.setOrientation(orientation);
+            Collection<WorldPoint> wps = WorldPoint.toLocalInstance(worldView, nonInstancedPoint);
+            if (!wps.isEmpty())
+            {
+                WorldPoint worldPoint = wps.iterator().next();
+                localPoint = LocalPoint.fromWorld(worldView, worldPoint);
+            }
+        }
+
+        switch (locationOption)
+        {
+            case TO_PLAYER:
+                localPoint = client.getLocalPlayer().getLocalLocation();
+                break;
+            case TO_HOVERED_TILE:
+                Tile tile = worldView.getSelectedSceneTile();
+                if (tile == null)
+                {
+                    return;
+                }
+
+                localPoint = tile.getLocalLocation();
+                break;
+            case TO_SAVED_LOCATION:
+            case TO_CURRENT_TICK:
+            default:
+                break;
+        }
+
+        if (localPoint == null || !localPoint.isInScene())
+        {
+            inScene = false;
+            return;
+        }
+
+        inScene = true;
+        localPoint = LocalPoint.fromScene(localPoint.getSceneX() + diff[0], localPoint.getSceneY() + diff[1], worldView);
+
+        if (initialize)
+        {
+            WorldPoint worldPoint = WorldPoint.fromLocalInstance(client, localPoint);
+            nonInstancedPoint = worldPoint;
+            inPOH = false;
+        }
+
+        if (transplant)
+        {
+            WorldPoint worldPoint = WorldPoint.fromLocalInstance(client, localPoint);
+            PathFinder.transplantSteps(this, worldView, worldPoint.getX(), worldPoint.getY());
+
+            KeyFrame kf = findNextKeyFrame(KeyFrameType.MOVEMENT, -TimeSheetPanel.ABSOLUTE_MAX_SEQUENCE_LENGTH);
+            if (kf != null)
+            {
+                MovementKeyFrame keyFrame = (MovementKeyFrame) kf;
+                int[][] step = keyFrame.getPath();
+                if (step.length != 0)
+                {
+                    int[] first = step[0];
+                    worldPoint = new WorldPoint(first[0], first[1], worldView.getPlane());
+                }
+            }
+
+            nonInstancedPoint = worldPoint;
+            inPOH = false;
+        }
+
+        updateLocation(localPoint, worldView.getPlane());
+
+        if (locationOption == LocationOption.TO_HOVERED_TILE)
+        {
+            programmer.register3DChanges(this);
+        }
+
+        switch (activeOption)
+        {
+            case ACTIVE:
+                setActive(true, true, true, clientThread);
+                break;
+            case INACTIVE:
+                setActive(false, false, false, clientThread);
+                break;
+            case UNCHANGED:
+                resetActive(clientThread);
         }
     }
 
-    public void setLocation(LocalPoint lp, int plane)
+    public void setLocationPOH(Client client, ClientThread clientThread, Programmer programmer, boolean initialize, boolean transplant, ActiveOption activeOption, LocationOption locationOption, int[] diff)
+    {
+        WorldView worldView = client.getTopLevelWorldView();
+        LocalPoint localPoint = null;
+        if (instancedPoint != null)
+        {
+            localPoint = instancedPoint;
+        }
+
+        switch (locationOption)
+        {
+            case TO_PLAYER:
+                localPoint = client.getLocalPlayer().getLocalLocation();
+                break;
+            case TO_HOVERED_TILE:
+                Tile tile = worldView.getSelectedSceneTile();
+                if (tile == null)
+                {
+                    return;
+                }
+
+                localPoint = tile.getLocalLocation();
+                break;
+            case TO_CURRENT_TICK:
+            case TO_SAVED_LOCATION:
+            default:
+                break;
+        }
+
+        if (localPoint == null || !localPoint.isInScene())
+        {
+            inScene = false;
+            return;
+        }
+
+        inScene = true;
+        localPoint = LocalPoint.fromScene(localPoint.getSceneX() + diff[0], localPoint.getSceneY() + diff[1], worldView);
+
+        if (initialize)
+        {
+            instancedPoint = localPoint;
+            instancedPlane = worldView.getPlane();
+            inPOH = true;
+        }
+
+        if (transplant)
+        {
+            PathFinder.transplantSteps(this, worldView, localPoint.getSceneX(), localPoint.getSceneY());
+            LocalPoint savedPoint = localPoint;
+
+            KeyFrame kf = findNextKeyFrame(KeyFrameType.MOVEMENT, -TimeSheetPanel.ABSOLUTE_MAX_SEQUENCE_LENGTH);
+            if (kf != null)
+            {
+                MovementKeyFrame keyFrame = (MovementKeyFrame) kf;
+                int[][] step = keyFrame.getPath();
+                if (step.length != 0)
+                {
+                    int[] first = step[0];
+                    savedPoint = new LocalPoint(first[0], first[1], worldView);
+                }
+            }
+
+            instancedPoint = savedPoint;
+            instancedPlane = worldView.getPlane();
+            inPOH = true;
+        }
+
+        updateLocation(localPoint, worldView.getPlane());
+
+        if (locationOption == LocationOption.TO_HOVERED_TILE)
+        {
+            programmer.register3DChanges(this);
+        }
+
+        switch (activeOption)
+        {
+            case ACTIVE:
+                setActive(true, true, true, clientThread);
+                break;
+            case INACTIVE:
+                setActive(true, false, false, clientThread);
+                break;
+            case UNCHANGED:
+                resetActive(clientThread);
+        }
+    }
+
+    public void updateLocation(LocalPoint lp, int plane)
     {
         if (ckObject != null)
         {
@@ -151,6 +366,52 @@ public class Character
         {
             spotAnim2.setLocation(lp, plane);
         }
+    }
+
+    public void resetToBaseModel(Client client, ClientThread clientThread)
+    {
+        setToBaseModel(client, clientThread, customMode, (int) modelSpinner.getValue());
+    }
+
+    public void setToBaseModel(Client client, ClientThread clientThread, boolean modelMode, int modelId)
+    {
+        if (ckObject == null)
+        {
+            return;
+        }
+
+        clientThread.invokeLater(() -> {
+            Model model;
+            int widthScale = 128;
+            int heightScale = 128;
+
+            int renderMode = Renderable.RENDERMODE_DEFAULT;
+            if (modelMode)
+            {
+                boolean storedModelExists = storedModel != null;
+                if (storedModelExists)
+                {
+                    model = storedModel.getModel();
+                    CustomModelComp comp = storedModel.getComp();
+                    renderMode = comp.getRenderMode();
+                    widthScale = comp.getWidthScale();
+                    heightScale = comp.getHeightScale();
+                }
+                else
+                {
+                    int chinchompa = 29757;
+                    model = client.loadModel(chinchompa);
+                }
+            }
+            else
+            {
+                model = client.loadModel(modelId);
+            }
+
+            ckObject.setModel(model, widthScale, heightScale);
+            ckObject.setRenderMode(renderMode);
+            objectPanel.updateImage(model);
+        });
     }
 
     public void setAnimation(ClientThread clientThread, Client client, Random random, AnimationType type, int animId, int animFrame, boolean randomizeStartFrame, boolean allowPause)
@@ -186,6 +447,40 @@ public class Character
         }
     }
 
+    public void setRadius(ClientThread clientThread, int radius)
+    {
+        clientThread.invoke(() -> ckObject.setRadius(radius));
+    }
+
+    public void addOrientation(int addition)
+    {
+        int orientation = Orientation.boundOrientation(ckObject.getOrientation() + addition);
+        setOrientation(orientation);
+    }
+
+    public void setOrientation(int orientation)
+    {
+        orientationSpinner.setValue(orientation);
+    }
+
+    public void updateCKOOrientation(int orientation)
+    {
+        if (ckObject != null)
+        {
+            ckObject.setOrientation(orientation);
+        }
+
+        if (spotAnim1 != null)
+        {
+            spotAnim1.setOrientation(orientation);
+        }
+
+        if (spotAnim2 != null)
+        {
+            spotAnim2.setOrientation(orientation);
+        }
+    }
+
     public void setSpotAnim(CKObject spotAnim, KeyFrameType spotAnimType)
     {
         if (spotAnimType == KeyFrameType.SPOTANIM)
@@ -201,12 +496,12 @@ public class Character
 
     public KeyFrame getCurrentKeyFrame(KeyFrameType type)
     {
-        return currentFrames[KeyFrameType.getIndex(type)];
+        return currentFrames[KeyFrameType.getCharacterKeyFrameIndex(type)];
     }
 
     public void setCurrentKeyFrame(KeyFrame keyFrame, KeyFrameType type)
     {
-        currentFrames[KeyFrameType.getIndex(type)] = keyFrame;
+        currentFrames[KeyFrameType.getCharacterKeyFrameIndex(type)] = keyFrame;
     }
 
     public void resetMovementKeyFrame(int clientTick, double currentTime)
@@ -226,7 +521,7 @@ public class Character
 
     public KeyFrame[] getKeyFrames(KeyFrameType type)
     {
-        return frames[KeyFrameType.getIndex(type)];
+        return frames[KeyFrameType.getCharacterKeyFrameIndex(type)];
     }
 
     public KeyFrame[] getAllKeyFrames()
@@ -242,7 +537,7 @@ public class Character
 
     public void setKeyFrames(KeyFrame[] keyFrames, KeyFrameType type)
     {
-        frames[KeyFrameType.getIndex(type)] = keyFrames;
+        frames[KeyFrameType.getCharacterKeyFrameIndex(type)] = keyFrames;
     }
 
     /**
@@ -353,6 +648,11 @@ public class Character
 
                 if (nextFrame == null)
                 {
+                    if (keyFrame.getTick() <= tick)
+                    {
+                        continue;
+                    }
+
                     nextFrame = keyFrame;
                     continue;
                 }
@@ -522,6 +822,20 @@ public class Character
         }
 
         return keyFrames[keyFrames.length - 1];
+    }
+
+    public boolean containsKeyFrame(KeyFrame keyFrame)
+    {
+        KeyFrameType type = keyFrame.getKeyFrameType();
+        for (KeyFrame frame : getKeyFrames(type))
+        {
+            if (keyFrame == frame)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

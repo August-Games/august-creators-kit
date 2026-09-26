@@ -27,4 +27,48 @@ public enum LightingStyle
     {
         return string;
     }
+
+    public static LightingStyle fromCustomLighting(CustomLighting cl)
+    {
+        if (cl == null)
+        {
+            return CUSTOM;
+        }
+
+        LightingStyle[] styles = new LightingStyle[]{DEFAULT, ACTOR, SPOTANIM, DYNAMIC, NONE};
+        for (LightingStyle ls : styles)
+        {
+            if (ls.getAmbient() == cl.getAmbient()
+                && ls.getContrast() == cl.getContrast()
+                && ls.getX() == cl.getX()
+                && ls.getY() == cl.getY()
+                && ls.getZ() == cl.getZ())
+            {
+                return ls;
+            }
+        }
+
+        return CUSTOM;
+    }
+
+    public static LightingStyle fromModelType(CustomModelType type)
+    {
+        switch (type)
+        {
+            case BLENDER:
+            case FORGED:
+            case CACHE_PLAYER:
+            case CACHE_NPC:
+                return ACTOR;
+            default:
+            case CACHE_OBJECT:
+            case CACHE_MAN_WEAR:
+            case CACHE_WOMAN_WEAR:
+            case CACHE_GROUND_ITEM:
+                return DEFAULT;
+            case CACHE_SPOTANIM:
+                return SPOTANIM;
+
+        }
+    }
 }

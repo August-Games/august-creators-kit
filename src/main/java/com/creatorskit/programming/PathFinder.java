@@ -3,7 +3,7 @@ package com.creatorskit.programming;
 import com.creatorskit.Character;
 import com.creatorskit.swing.timesheet.keyframe.KeyFrame;
 import com.creatorskit.swing.timesheet.keyframe.KeyFrameType;
-import com.creatorskit.swing.timesheet.keyframe.MovementKeyFrame;
+import com.creatorskit.swing.timesheet.keyframe.subtypes.MovementKeyFrame;
 import net.runelite.api.*;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
@@ -281,7 +281,7 @@ public class PathFinder
         }
     }
 
-    public void transplantSteps(Character character, WorldView worldView, int newX, int newY)
+    public static void transplantSteps(Character character, WorldView worldView, int newX, int newY)
     {
         boolean poh = MovementManager.useLocalLocations(worldView);
 
@@ -342,7 +342,7 @@ public class PathFinder
         transplantKeyFrames(character, worldView, changeX, changeY);
     }
 
-    private void transplantKeyFrames(Character character, WorldView worldView, int changeX, int changeY)
+    private static void transplantKeyFrames(Character character, WorldView worldView, int changeX, int changeY)
     {
         MovementKeyFrame[] kfs = character.getMovementKeyFrames();
         if (kfs == null)

@@ -1,6 +1,7 @@
 package com.creatorskit.models;
 
 import com.creatorskit.CreatorsConfig;
+import com.creatorskit.models.dataloaders.*;
 import com.creatorskit.models.datatypes.*;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
@@ -8,7 +9,6 @@ import lombok.Data;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.*;
-import net.runelite.api.kit.KitType;
 import okhttp3.*;
 import org.apache.commons.lang3.ArrayUtils;
 
@@ -17,16 +17,12 @@ import javax.inject.Singleton;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.lang.reflect.Type;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
 
+@Singleton
 @Slf4j
 @Getter
-@Singleton
 public class DataFinder
 {
     public enum DataType
@@ -57,8 +53,14 @@ public class DataFinder
         Arrays.stream(DataType.values()).forEach(d -> this.put(d, false));
     }};
 
+    private final Client client;
     private Gson gson;
     OkHttpClient httpClient;
+    private final NpcLoader npcLoader;
+    private final ObjectLoader objectLoader;
+    private final ItemLoader itemLoader;
+    private final KitLoader kitLoader;
+    private final SpotAnimLoader spotAnimLoader;
     CreatorsConfig config;
 
     private int lastAnim;
@@ -67,17 +69,16 @@ public class DataFinder
     /**
      * Incremented every time the catalog is cleared/reloaded. Async load callbacks capture
      * the epoch active when they were enqueued and discard their results if it has since
-     * changed, so data fetched before a {@link #clearData()} (e.g. the plugin being disabled)
-     * never repopulates the cleared collections.
+     * changed, so data fetched before a {@link #clearDataBase()} (e.g. the plugin being
+     * disabled) never repopulates the cleared collections.
      */
     private volatile int loadEpoch = 0;
 
-    private final List<NPCData> npcData = new ArrayList<>();
-    private final List<ObjectData> objectData = new ArrayList<>();
-    private final List<SpotanimData> spotanimData = new ArrayList<>();
-    private final List<ItemData> itemData = new ArrayList<>();
-    private final List<KitData> kitData = new ArrayList<>();
-    private final List<SeqData> seqData = new ArrayList<>();
+    private final List<NpcDefinition> npcData = new ArrayList<>();
+    private final List<ObjectDefinition> objectData = new ArrayList<>();
+    private final List<SpotAnimDefinition> spotanimData = new ArrayList<>();
+    private final List<ItemDefinition> itemData = new ArrayList<>();
+    private final List<KitDefinition> kitData = new ArrayList<>();
     private final List<AnimData> animData = new ArrayList<>();
     private final List<WeaponAnimData> weaponAnimData = new ArrayList<>();
     private final List<SoundData> soundData = new ArrayList<>();
@@ -99,12 +100,17 @@ public class DataFinder
     private static final int WEAPON_IDX = 3;
     private static final int SHIELD_IDX = 5;
 
-
     @Inject
-    public DataFinder(Gson gson, OkHttpClient httpClient, CreatorsConfig config)
+    public DataFinder(Client client, Gson gson, OkHttpClient httpClient, NpcLoader npcLoader, ObjectLoader objectLoader, ItemLoader itemLoader, KitLoader kitLoader, SpotAnimLoader spotAnimLoader, CreatorsConfig config)
     {
+        this.client = client;
         this.gson = gson;
         this.httpClient = httpClient;
+        this.npcLoader = npcLoader;
+        this.objectLoader = objectLoader;
+        this.itemLoader = itemLoader;
+        this.kitLoader = kitLoader;
+        this.spotAnimLoader = spotAnimLoader;
         this.config = config;
         // Do NOT load the catalog here. RuneLite instantiates every installed plugin (and its
         // @Inject dependencies) regardless of the enabled toggle, so loading in the constructor
@@ -112,46 +118,46 @@ public class DataFinder
         // is loaded lazily from CreatorsPlugin.startUp() and freed in CreatorsPlugin.shutDown().
     }
 
-    public void reloadData() {
-        clearData();
+    /**
+     * Clears any previously loaded catalog, then loads it fresh from the configured sources.
+     * Called from CreatorsPlugin.startUp() and whenever the catalog base URL changes.
+     */
+    public void reloadData()
+    {
+        clearDataBase();
+        loadDataBase();
+    }
+
+    public void loadDataBase()
+    {
+        if (client == null)
+        {
+            return;
+        }
+
         lookupNPCData();
         lookupObjectData();
         lookupSpotAnimData();
         lookupItemData();
         lookupKitData();
-        lookupSeqData();
         lookupAnimData();
         lookupWeaponAnimationData();
         lookupSoundData();
     }
 
-    /**
-     * Clears every loaded catalog collection and resets load state so this DataFinder holds no
-     * ObjectData/ItemData/NPCData/SeqData/etc. Bumping {@link #loadEpoch} invalidates any
-     * in-flight async loads so their results are discarded instead of repopulating the cleared
-     * collections. Called from CreatorsPlugin.shutDown() to reclaim memory when the plugin is
-     * disabled, and at the start of {@link #reloadData()} before a fresh load.
-     */
-    public void clearData() {
+    public void clearDataBase()
+    {
         loadEpoch++;
+        Arrays.stream(DataType.values()).forEach(d -> loadState.put(d, false));
+        Arrays.stream(DataType.values()).forEach(d -> loadCallbacks.put(d, new ArrayList<>()));
         npcData.clear();
         objectData.clear();
         spotanimData.clear();
         itemData.clear();
         kitData.clear();
-        seqData.clear();
         animData.clear();
         weaponAnimData.clear();
         soundData.clear();
-        lastAnim = 0;
-        for (DataType dataType : DataType.values())
-        {
-            synchronized (dataType)
-            {
-                loadState.put(dataType, false);
-                loadCallbacks.get(dataType).clear();
-            }
-        }
     }
 
     /**
@@ -189,86 +195,27 @@ public class DataFinder
 
     private void lookupKitData()
     {
-        final int epoch = loadEpoch;
-        Request kitRequest = new Request.Builder()
-                .url("https://raw.githubusercontent.com/ScreteMonge/cache-converter/master/.venv/kit.json")
-                .build();
-        Call kitCall = httpClient.newCall(kitRequest);
-        kitCall.enqueue(new Callback()
+        if (client == null || client.getIndexConfig() == null)
         {
-            @Override
-            public void onFailure(Call call, IOException e)
-            {
-                log.debug("Failed to access URL: https://raw.githubusercontent.com/ScreteMonge/cache-converter/master/.venv/kit.json");
-                if (epoch == loadEpoch)
-                {
-                    executeCallbacks(DataType.KIT);
-                }
-            }
+            return;
+        }
 
-            @Override
-            public void onResponse(Call call, Response response)
-            {
-                if (response.isSuccessful() && response.body() != null)
-                {
-                    InputStreamReader reader = new InputStreamReader(response.body().byteStream());
-                    Type listType = new TypeToken<List<KitData>>() {}.getType();
-                    List<KitData> list = gson.fromJson(reader, listType);
-                    if (epoch == loadEpoch)
-                    {
-                        kitData.addAll(list);
-                    }
+        final int KIT_CONFIG = 3;
+        int[] ids = client.getIndexConfig().getFileIds(KIT_CONFIG);
 
-                    response.body().close();
-                }
-                if (epoch == loadEpoch)
-                {
-                    executeCallbacks(DataType.KIT);
-                }
-            }
-        });
-    }
-
-    private void lookupSeqData()
-    {
-        final int epoch = loadEpoch;
-        Request seqRequest = new Request.Builder()
-                .url(config.configBaseUrl() + "sequences.json")
-                .build();
-        Call call = httpClient.newCall(seqRequest);
-        call.enqueue(new Callback()
+        for (int i : ids)
         {
-            @Override
-            public void onFailure(Call call, IOException e)
+            byte[] data = client.getIndex(2).loadData(KIT_CONFIG, i);
+            if (data == null)
             {
-                log.debug("Failed to access URL: {}sequences.json", config.configBaseUrl());
-                if (epoch == loadEpoch)
-                {
-                    executeCallbacks(DataType.SEQ);
-                }
+                continue;
             }
 
-            @Override
-            public void onResponse(Call call, Response response)
-            {
-                if (response.isSuccessful() && response.body() != null)
-                {
-                    InputStreamReader reader = new InputStreamReader(response.body().byteStream());
-                    Type listType = new TypeToken<List<SeqData>>() {}.getType();
-                    List<SeqData> list = gson.fromJson(reader, listType);
-                    if (epoch == loadEpoch)
-                    {
-                        seqData.addAll(list);
-                    }
+            KitDefinition def = kitLoader.load(i, data);
+            kitData.add(def);
+        }
 
-                    response.body().close();
-                }
-                if (epoch == loadEpoch)
-                {
-                    executeCallbacks(DataType.SEQ);
-                }
-            }
-        });
+        executeCallbacks(DataType.KIT);
     }
 
     private void lookupAnimData()
@@ -313,7 +260,7 @@ public class DataFinder
         });
     }
 
-    public ModelStats[] findModelsForPlayer(boolean groundItem, boolean maleItem, int[] items, int animId, int[] spotAnims)
+    public ModelStats[] findModelsForPlayer(boolean groundItem, boolean maleItem, int[] items, int animId, int leftHandItem, int rightHandItem, int[] spotAnims)
     {
         //Convert equipmentId to itemId or kitId as appropriate
         int[] ids = new int[items.length];
@@ -352,7 +299,7 @@ public class DataFinder
 
         if (animId != -1)
         {
-            removePlayerItems(animSequence, animId);
+            removePlayerItems(animSequence, leftHandItem, rightHandItem);
         }
 
         //for ItemIds
@@ -390,39 +337,30 @@ public class DataFinder
         return orderedItems.toArray(new ModelStats[0]);
     }
 
-    public void removePlayerItems(AnimSequence animSequence, int animId)
+    public void removePlayerItems(AnimSequence animSequence, int leftHandItem, int rightHandItem)
     {
-        for (SeqData seqDatum : seqData)
+        switch (leftHandItem)
         {
-            if (seqDatum.getId() == animId)
-            {
-                int offHandItem = seqDatum.getLeftHandItem();
-                switch (offHandItem)
-                {
-                    case -1:
-                        break;
-                    case 0:
-                        animSequence.setOffHandData(AnimSequenceData.HIDE);
-                        break;
-                    default:
-                        animSequence.setOffHandItemId(offHandItem - 512);
-                        animSequence.setOffHandData(AnimSequenceData.SWAP);
-                }
-
-                int mainHandItem = seqDatum.getRightHandItem();
-                switch (mainHandItem)
-                {
-                    case -1:
-                        break;
-                    case 0:
-                        animSequence.setMainHandData(AnimSequenceData.HIDE);
-                        break;
-                    default:
-                        animSequence.setMainHandItemId(mainHandItem - 512);
-                        animSequence.setMainHandData(AnimSequenceData.SWAP);
-                }
+            case -1:
                 break;
-            }
+            case 0:
+                animSequence.setOffHandData(AnimSequenceData.HIDE);
+                break;
+            default:
+                animSequence.setOffHandItemId(leftHandItem - 512);
+                animSequence.setOffHandData(AnimSequenceData.SWAP);
+        }
+
+        switch (rightHandItem)
+        {
+            case -1:
+                break;
+            case 0:
+                animSequence.setMainHandData(AnimSequenceData.HIDE);
+                break;
+            default:
+                animSequence.setMainHandItemId(rightHandItem - 512);
+                animSequence.setMainHandData(AnimSequenceData.SWAP);
         }
     }
 
@@ -488,7 +426,7 @@ public class DataFinder
             }
         }
 
-        for (ItemData itemDatum : itemData)
+        for (ItemDefinition itemDatum : itemData)
         {
             if (itemsToComplete == 0)
             {
@@ -524,50 +462,15 @@ public class DataFinder
                         offset = itemDatum.getFemaleOffset();
                     }
 
-                    short[] rf = new short[0];
-                    short[] rt = new short[0];
-
-                    if (itemDatum.getColorReplace() != null)
+                    if (modelIds == null || modelIds.length == 0)
                     {
-                        int[] recolorToReplace = itemDatum.getColorReplace();
-                        int[] recolorToFind = itemDatum.getColorFind();
-                        rf = new short[recolorToReplace.length];
-                        rt = new short[recolorToReplace.length];
-
-                        for (int e = 0; e < rf.length; e++)
-                        {
-                            int rfi = recolorToFind[e];
-                            if (rfi > 32767)
-                            {
-                                rfi -= 65536;
-                            }
-                            rf[e] = (short) rfi;
-
-                            int rti = recolorToReplace[e];
-                            if (rti > 32767)
-                            {
-                                rti -= 65536;
-                            }
-                            rt[e] = (short) rti;
-                        }
+                        continue;
                     }
 
-                    short[] rtFrom = new short[0];
-                    short[] rtTo = new short[0];
-
-                    if (itemDatum.getTextureReplace() != null)
-                    {
-                        int[] textureToReplace = itemDatum.getTextureReplace();
-                        int[] retextureToFind = itemDatum.getTextureFind();
-                        rtFrom = new short[textureToReplace.length];
-                        rtTo = new short[textureToReplace.length];
-
-                        for (int e = 0; e < rtFrom.length; e++)
-                        {
-                            rtFrom[e] = (short) retextureToFind[e];
-                            rtTo[e] = (short) textureToReplace[e];
-                        }
-                    }
+                    short[] rf = itemDatum.getColorFind();
+                    short[] rt = itemDatum.getColorReplace();
+                    short[] rtFrom = itemDatum.getTextureFind();
+                    short[] rtTo = itemDatum.getTextureReplace();
 
                     LightingStyle ls = LightingStyle.ACTOR;
                     CustomLighting customLighting = new CustomLighting(
@@ -621,7 +524,7 @@ public class DataFinder
             }
         }
 
-        for (KitData kitData : kitData)
+        for (KitDefinition kitData : kitData)
         {
             if (itemsToComplete == 0)
             {
@@ -640,34 +543,15 @@ public class DataFinder
                 {
                     itemsToComplete--;
                     int[] modelIds = kitData.getModels();
-
-                    short[] rf = new short[0];
-                    short[] rt = new short[0];
-
-                    if (kitData.getRecolorToReplace() != null)
+                    if (modelIds == null || modelIds.length == 0)
                     {
-                        int[] recolorToReplace = kitData.getRecolorToReplace();
-                        int[] recolorToFind = kitData.getRecolorToFind();
-                        rf = new short[recolorToReplace.length];
-                        rt = new short[recolorToReplace.length];
-
-                        for (int e = 0; e < rf.length; e++)
-                        {
-                            int rfi = recolorToFind[e];
-                            if (rfi > 32767)
-                            {
-                                rfi -= 65536;
-                            }
-                            rf[e] = (short) rfi;
-
-                            int rti = recolorToReplace[e];
-                            if (rti > 32767)
-                            {
-                                rti -= 65536;
-                            }
-                            rt[e] = (short) rti;
-                        }
+                        continue;
                     }
+
+                    short[] rf = kitData.getRecolorToFind();
+                    short[] rt = kitData.getRecolorToReplace();
+                    short[] rtf = kitData.getRetextureToFind();
+                    short[] rtt = kitData.getRetextureToReplace();
 
                     LightingStyle ls = LightingStyle.ACTOR;
                     CustomLighting customLighting = new CustomLighting(
@@ -687,8 +571,8 @@ public class DataFinder
                                     bodyParts[i],
                                     rf,
                                     rt,
-                                    new short[0],
-                                    new short[0],
+                                    rtf,
+                                    rtt,
                                     128,
                                     128,
                                     128,
@@ -708,7 +592,7 @@ public class DataFinder
     {
         int itemsToComplete = spotAnims.length;
 
-        for (SpotanimData spotanimData : spotanimData)
+        for (SpotAnimDefinition spotanimData : spotanimData)
         {
             if (itemsToComplete == 0)
             {
@@ -722,32 +606,8 @@ public class DataFinder
                     itemsToComplete--;
                     int modelId = spotanimData.getModelId();
 
-                    short[] rf = new short[0];
-                    short[] rt = new short[0];
-                    if (spotanimData.getRecolorToReplace() != null)
-                    {
-                        int[] recolorToReplace = spotanimData.getRecolorToReplace();
-                        int[] recolorToFind = spotanimData.getRecolorToFind();
-                        rf = new short[recolorToReplace.length];
-                        rt = new short[recolorToReplace.length];
-
-                        for (int e = 0; e < rf.length; e++)
-                        {
-                            int rfi = recolorToFind[e];
-                            if (rfi > 32767)
-                            {
-                                rfi -= 65536;
-                            }
-                            rf[e] = (short) rfi;
-
-                            int rti = recolorToReplace[e];
-                            if (rti > 32767)
-                            {
-                                rti -= 65536;
-                            }
-                            rt[e] = (short) rti;
-                        }
-                    }
+                    short[] rf = spotanimData.getRecolorToFind();
+                    short[] rt = spotanimData.getRecolorToReplace();
 
                     int ambient = spotanimData.getAmbient();
                     int contrast = spotanimData.getContrast();
@@ -761,7 +621,7 @@ public class DataFinder
                             ls.getZ());
 
                     String name = spotanimData.getName();
-                    if (name.equals("null") || name.isEmpty())
+                    if (name == null || name.equals("null") || name.isEmpty())
                     {
                         name = DEFAULT_NAME;
                     }
@@ -789,6 +649,30 @@ public class DataFinder
 
     private void lookupSpotAnimData()
     {
+        if (client == null || client.getIndexConfig() == null)
+        {
+            return;
+        }
+
+        final int SPOTANIM_CONFIG = 13;
+        int[] ids = client.getIndexConfig().getFileIds(SPOTANIM_CONFIG);
+        Set<Integer> unknownOpcodes = new HashSet<>();
+
+        for (int i : ids)
+        {
+            byte[] data = client.getIndex(2).loadData(SPOTANIM_CONFIG, i);
+            if (data == null)
+            {
+                continue;
+            }
+
+            SpotAnimDefinition def = spotAnimLoader.load(unknownOpcodes, i, data);
+            if (def != null)
+            {
+                spotanimData.add(def);
+            }
+        }
+
         final int epoch = loadEpoch;
         Request spotanimRequest = new Request.Builder()
                 .url(config.configBaseUrl() + "spotanims.json")
@@ -815,12 +699,22 @@ public class DataFinder
                     InputStreamReader reader = new InputStreamReader(response.body().byteStream());
                     Type listType = new TypeToken<List<SpotanimData>>() {}.getType();
                     List<SpotanimData> list = gson.fromJson(reader, listType);
+                    response.body().close();
 
                     if (epoch == loadEpoch)
                     {
-                        spotanimData.addAll(list);
+                        for (SpotAnimDefinition def : spotanimData)
+                        {
+                            for (SpotanimData data : list)
+                            {
+                                if (def.getId() == data.getId())
+                                {
+                                    def.setName(data.getName());
+                                    break;
+                                }
+                            }
+                        }
                     }
-                    response.body().close();
                 }
                 if (epoch == loadEpoch)
                 {
@@ -833,7 +727,7 @@ public class DataFinder
     public ModelStats[] findSpotAnim(int spotAnimId)
     {
         ArrayList<ModelStats> modelStats = new ArrayList<>();
-        for (SpotanimData spotanimData : spotanimData)
+        for (SpotAnimDefinition spotanimData : spotanimData)
         {
             if (spotanimData.getId() == spotAnimId)
             {
@@ -841,32 +735,8 @@ public class DataFinder
 
                 lastAnim = spotanimData.getAnimationId();
 
-                short[] rf = new short[0];
-                short[] rt = new short[0];
-                if (spotanimData.getRecolorToReplace() != null)
-                {
-                    int[] recolorToReplace = spotanimData.getRecolorToReplace();
-                    int[] recolorToFind = spotanimData.getRecolorToFind();
-                    rf = new short[recolorToReplace.length];
-                    rt = new short[recolorToReplace.length];
-
-                    for (int e = 0; e < rf.length; e++)
-                    {
-                        int rfi = recolorToFind[e];
-                        if (rfi > 32767)
-                        {
-                            rfi -= 65536;
-                        }
-                        rf[e] = (short) rfi;
-
-                        int rti = recolorToReplace[e];
-                        if (rti > 32767)
-                        {
-                            rti -= 65536;
-                        }
-                        rt[e] = (short) rti;
-                    }
-                }
+                short[] rf = spotanimData.getRecolorToFind();
+                short[] rt = spotanimData.getRecolorToReplace();
 
                 int ambient = spotanimData.getAmbient();
                 int contrast = spotanimData.getContrast();
@@ -880,7 +750,7 @@ public class DataFinder
                         ls.getZ());
 
                 String name = spotanimData.getName();
-                if (name.equals("null") || name.isEmpty())
+                if (name == null || name.equals("null") || name.isEmpty())
                 {
                     name = DEFAULT_NAME;
                 }
@@ -909,7 +779,7 @@ public class DataFinder
         return new ModelStats[]{modelStats.get(0)};
     }
 
-    public ModelStats[] findSpotAnim(SpotanimData spotanimData)
+    public ModelStats[] findSpotAnim(SpotAnimDefinition spotanimData)
     {
         if (spotanimData == null)
         {
@@ -921,32 +791,8 @@ public class DataFinder
 
         lastAnim = spotanimData.getAnimationId();
 
-        short[] rf = new short[0];
-        short[] rt = new short[0];
-        if (spotanimData.getRecolorToReplace() != null)
-        {
-            int[] recolorToReplace = spotanimData.getRecolorToReplace();
-            int[] recolorToFind = spotanimData.getRecolorToFind();
-            rf = new short[recolorToReplace.length];
-            rt = new short[recolorToReplace.length];
-
-            for (int e = 0; e < rf.length; e++)
-            {
-                int rfi = recolorToFind[e];
-                if (rfi > 32767)
-                {
-                    rfi -= 65536;
-                }
-                rf[e] = (short) rfi;
-
-                int rti = recolorToReplace[e];
-                if (rti > 32767)
-                {
-                    rti -= 65536;
-                }
-                rt[e] = (short) rti;
-            }
-        }
+        short[] rf = spotanimData.getRecolorToFind();
+        short[] rt = spotanimData.getRecolorToReplace();
 
         int ambient = spotanimData.getAmbient();
         int contrast = spotanimData.getContrast();
@@ -960,7 +806,7 @@ public class DataFinder
                 ls.getZ());
 
         String name = spotanimData.getName();
-        if (name.equals("null") || name.isEmpty())
+        if (name == null || name.equals("null") || name.isEmpty())
         {
             name = DEFAULT_NAME;
         }
@@ -982,9 +828,9 @@ public class DataFinder
         return new ModelStats[]{modelStats.get(0)};
     }
 
-    public SpotanimData getSpotAnimData(int spotAnimId)
+    public SpotAnimDefinition getSpotAnimData(int spotAnimId)
     {
-        for (SpotanimData data : spotanimData)
+        for (SpotAnimDefinition data : spotanimData)
         {
             if (data.getId() == spotAnimId)
             {
@@ -997,49 +843,36 @@ public class DataFinder
 
     public void lookupNPCData()
     {
-        final int epoch = loadEpoch;
-        Request request = new Request.Builder().url(config.configBaseUrl() + "npc_defs.json").build();
-        Call call = httpClient.newCall(request);
-        call.enqueue(new Callback()
+        if (client == null || client.getIndexConfig() == null)
         {
-            @Override
-            public void onFailure(Call call, IOException e)
+            return;
+        }
+
+        final int NPC_CONFIG = 9;
+        int[] ids = client.getIndexConfig().getFileIds(NPC_CONFIG);
+        Set<Integer> unknownOpcodes = new HashSet<>();
+
+        for (int i : ids)
+        {
+            byte[] data = client.getIndex(2).loadData(NPC_CONFIG, i);
+            if (data == null)
             {
-                log.debug("Failed to access URL: {}npc_defs.json", config.configBaseUrl());
-                if (epoch == loadEpoch)
-                {
-                    executeCallbacks(DataType.NPC);
-                }
+                continue;
             }
 
-            @Override
-            public void onResponse(Call call, Response response)
+            NpcDefinition def = npcLoader.load(unknownOpcodes, i, data);
+            if (def != null)
             {
-                if (response.isSuccessful() && response.body() != null)
-                {
-                    InputStreamReader reader = new InputStreamReader(response.body().byteStream());
-
-                    Type listType = new TypeToken<List<NPCData>>() {}.getType();
-                    List<NPCData> list = gson.fromJson(reader, listType);
-
-                    if (epoch == loadEpoch)
-                    {
-                        npcData.addAll(list);
-                        npcData.sort(Comparator.comparing(NPCData::getName));
-                    }
-                    response.body().close();
-                }
-                if (epoch == loadEpoch)
-                {
-                    executeCallbacks(DataType.NPC);
-                }
+                npcData.add(def);
             }
-        });
+        }
+
+        executeCallbacks(DataType.NPC);
     }
 
-    public NPCData findNPCData(NPC npc)
+    public NpcDefinition findNPCData(NPC npc)
     {
-        for (NPCData npcData : npcData)
+        for (NpcDefinition npcData : npcData)
         {
             if (npcData.getId() == npc.getId())
             {
@@ -1050,44 +883,94 @@ public class DataFinder
         return null;
     }
 
-    public ModelStats[] findModelsForNPC(int npcId)
+    public ModelStats[] findModelsForNPC(NPC npc)
+    {
+        NPCComposition composition = npc.getTransformedComposition();
+        NpcOverrides overrides = npc.getModelOverrides();
+
+        if (overrides != null && overrides.getModelIds() != null)
+        {
+            return findModelsForNPC(composition, overrides.getModelIds());
+        }
+
+        if (composition != null)
+        {
+            return findModelsForNPC(composition, composition.getModels());
+        }
+
+        composition = npc.getComposition();
+        return findModelsForNPC(composition, composition.getModels());
+    }
+
+    public ModelStats[] findModelsForNPC(NPCComposition comp, int[] modelIds)
     {
         ArrayList<ModelStats> modelStats = new ArrayList<>();
-        for (NPCData npcData : npcData)
+
+        short[] recolorToReplace = comp.getColorToReplace();
+        short[] recolorToFind = comp.getColorToReplaceWith();
+
+        if (recolorToReplace == null || recolorToFind == null)
+        {
+            recolorToReplace = new short[0];
+            recolorToFind = new short[0];
+        }
+
+        LightingStyle ls = LightingStyle.ACTOR;
+        CustomLighting customLighting = new CustomLighting(
+                ls.getAmbient(),
+                ls.getContrast(),
+                ls.getX(),
+                ls.getY(),
+                ls.getZ());
+
+        for (int i : modelIds)
+        {
+            modelStats.add(new ModelStats(
+                    i,
+                    comp.getName(),
+                    BodyPart.NA,
+                    recolorToReplace,
+                    recolorToFind,
+                    new short[0],
+                    new short[0],
+                    128,
+                    128,
+                    128,
+                    0,
+                    customLighting
+            ));
+        }
+
+        ModelStats[] stats = new ModelStats[modelStats.size()];
+        for (int i = 0; i < modelStats.size(); i++)
+        {
+            stats[i] = modelStats.get(i);
+        }
+
+        return stats;
+    }
+
+    public Map.Entry<int[], ModelStats[]> findModelsForNPC(int npcId)
+    {
+        ArrayList<ModelStats> modelStats = new ArrayList<>();
+        int widthScale = 128;
+        int heightScale = 128;
+        for (NpcDefinition npcData : npcData)
         {
             if (npcData.getId() == npcId)
             {
                 lastAnim = npcData.getStandingAnimation();
+                widthScale = npcData.getWidthScale();
+                heightScale = npcData.getHeightScale();
 
                 int[] modelIds = npcData.getModels();
-
-                short[] rf = new short[0];
-                short[] rt = new short[0];
-
-                if (npcData.getRecolorToReplace() != null)
+                if (modelIds == null || modelIds.length == 0)
                 {
-                    int[] recolorToReplace = npcData.getRecolorToReplace();
-                    int[] recolorToFind = npcData.getRecolorToFind();
-                    rf = new short[recolorToReplace.length];
-                    rt = new short[recolorToReplace.length];
-
-                    for (int i = 0; i < rf.length; i++)
-                    {
-                        int rfi = recolorToFind[i];
-                        if (rfi > 32767)
-                        {
-                            rfi -= 65536;
-                        }
-                        rf[i] = (short) rfi;
-
-                        int rti = recolorToReplace[i];
-                        if (rti > 32767)
-                        {
-                            rti -= 65536;
-                        }
-                        rt[i] = (short) rti;
-                    }
+                    return null;
                 }
+
+                short[] recolorToFind = npcData.getRecolorToFind();
+                short[] recolorToReplace = npcData.getRecolorToReplace();
 
                 LightingStyle ls = LightingStyle.ACTOR;
                 CustomLighting customLighting = new CustomLighting(
@@ -1103,13 +986,13 @@ public class DataFinder
                             i,
                             npcData.getName(),
                             BodyPart.NA,
-                            rf,
-                            rt,
+                            recolorToFind,
+                            recolorToReplace,
                             new short[0],
                             new short[0],
-                            npcData.getWidthScale(),
-                            npcData.getWidthScale(),
-                            npcData.getHeightScale(),
+                            128,
+                            128,
+                            128,
                             0,
                             customLighting
                     ));
@@ -1125,165 +1008,44 @@ public class DataFinder
             stats[i] = modelStats.get(i);
         }
 
-        return stats;
-    }
-
-    public ModelStats[] findModelsForNPC(int npcId, NpcOverrides overrides)
-    {
-        ArrayList<ModelStats> modelStats = new ArrayList<>();
-        for (NPCData npcData : npcData)
-        {
-            if (npcData.getId() == npcId)
-            {
-                lastAnim = npcData.getStandingAnimation();
-
-                int[] modelIds = overrides.getModelIds();
-
-                LightingStyle ls = LightingStyle.ACTOR;
-                CustomLighting customLighting = new CustomLighting(
-                        ls.getAmbient(),
-                        ls.getContrast(),
-                        ls.getX(),
-                        ls.getY(),
-                        ls.getZ());
-
-                for (int i : modelIds)
-                {
-                    modelStats.add(new ModelStats(
-                            i,
-                            npcData.getName(),
-                            BodyPart.NA,
-                            new short[0],
-                            new short[0],
-                            new short[0],
-                            new short[0],
-                            npcData.getWidthScale(),
-                            npcData.getWidthScale(),
-                            npcData.getHeightScale(),
-                            0,
-                            customLighting
-                    ));
-                }
-
-                break;
-            }
-        }
-
-        ModelStats[] stats = new ModelStats[modelStats.size()];
-        for (int i = 0; i < modelStats.size(); i++)
-        {
-            stats[i] = modelStats.get(i);
-        }
-
-        return stats;
-    }
-
-    public ModelStats[] findModelsForNPC(int npcId, NPCComposition composition)
-    {
-        ArrayList<ModelStats> modelStats = new ArrayList<>();
-        for (NPCData npcData : npcData)
-        {
-            if (npcData.getId() == npcId)
-            {
-                lastAnim = npcData.getStandingAnimation();
-
-                int[] modelIds = composition.getModels();
-                short[] colourToReplace = composition.getColorToReplace();
-                short[] colourToReplaceWith = composition.getColorToReplaceWith();
-
-                if (colourToReplace == null || colourToReplaceWith == null)
-                {
-                    colourToReplace = new short[0];
-                    colourToReplaceWith = new short[0];
-                }
-
-                LightingStyle ls = LightingStyle.ACTOR;
-                CustomLighting customLighting = new CustomLighting(
-                        ls.getAmbient(),
-                        ls.getContrast(),
-                        ls.getX(),
-                        ls.getY(),
-                        ls.getZ());
-
-                for (int i : modelIds)
-                {
-                    modelStats.add(new ModelStats(
-                            i,
-                            npcData.getName(),
-                            BodyPart.NA,
-                            colourToReplace,
-                            colourToReplaceWith,
-                            new short[0],
-                            new short[0],
-                            composition.getWidthScale(),
-                            composition.getWidthScale(),
-                            composition.getHeightScale(),
-                            0,
-                            customLighting
-                    ));
-                }
-
-                break;
-            }
-        }
-
-        ModelStats[] stats = new ModelStats[modelStats.size()];
-        for (int i = 0; i < modelStats.size(); i++)
-        {
-            stats[i] = modelStats.get(i);
-        }
-
-        return stats;
+        return new AbstractMap.SimpleEntry<>(new int[]{widthScale, heightScale}, stats);
     }
 
     private void lookupObjectData()
     {
-        final int epoch = loadEpoch;
-        Request request = new Request.Builder().url(config.configBaseUrl() + "object_defs.json").build();
-        Call call = httpClient.newCall(request);
-        call.enqueue(new Callback()
+        if (client == null || client.getIndexConfig() == null)
         {
-            @Override
-            public void onFailure(Call call, IOException e)
+            return;
+        }
+
+        final int OBJECT_CONFIG = 6;
+        int[] ids = client.getIndexConfig().getFileIds(OBJECT_CONFIG);
+        Set<Integer> unknownOpcodes = new HashSet<>();
+
+        for (int i : ids)
+        {
+            byte[] data = client.getIndex(2).loadData(OBJECT_CONFIG, i);
+            if (data == null)
             {
-                log.debug("Failed to access URL: {}object_defs.json", config.configBaseUrl());
-                if (epoch == loadEpoch)
-                {
-                    executeCallbacks(DataType.OBJECT);
-                }
+                continue;
             }
 
-            @Override
-            public void onResponse(Call call, Response response)
+            ObjectDefinition def = objectLoader.load(unknownOpcodes, i, data);
+            if (def != null)
             {
-                if (response.isSuccessful() && response.body() != null)
-                {
-                    //create a reader to read the URL
-                    InputStreamReader reader = new InputStreamReader(response.body().byteStream());
-
-                    Type listType = new TypeToken<List<ObjectData>>() {}.getType();
-                    List<ObjectData> list = gson.fromJson(reader, listType);
-
-                    if (epoch == loadEpoch)
-                    {
-                        objectData.addAll(list);
-                        objectData.sort(Comparator.comparing(ObjectData::getName));
-                    }
-                    response.body().close();
-                }
-                if (epoch == loadEpoch)
-                {
-                    executeCallbacks(DataType.OBJECT);
-                }
+                objectData.add(def);
             }
-        });
+        }
+
+        objectData.sort(Comparator.comparing(ObjectDefinition::getName));
+        executeCallbacks(DataType.OBJECT);
     }
 
     public ModelStats[] findModelsForObject(int objectId, int modelType, LightingStyle ls, boolean firstModelType)
     {
         ArrayList<ModelStats> modelStats = new ArrayList<>();
 
-        for (ObjectData objectData : objectData)
+        for (ObjectDefinition objectData : objectData)
         {
             if (objectData.getId() == objectId)
             {
@@ -1315,49 +1077,10 @@ public class DataFinder
                     }
                 }
 
-                short[] rf = new short[0];
-                short[] rt = new short[0];
-                if (objectData.getRecolorToReplace() != null)
-                {
-                    int[] recolorToReplace = objectData.getRecolorToReplace();
-                    int[] recolorToFind = objectData.getRecolorToFind();
-                    rf = new short[recolorToReplace.length];
-                    rt = new short[recolorToReplace.length];
-
-                    for (int i = 0; i < rf.length; i++)
-                    {
-                        int rfi = recolorToFind[i];
-                        if (rfi > 32767)
-                        {
-                            rfi -= 65536;
-                        }
-                        rf[i] = (short) rfi;
-
-                        int rti = recolorToReplace[i];
-                        if (rti > 32767)
-                        {
-                            rti -= 65536;
-                        }
-                        rt[i] = (short) rti;
-                    }
-                }
-
-                short[] rtFrom = new short[0];
-                short[] rtTo = new short[0];
-
-                if (objectData.getTextureToReplace() != null && objectData.getRetextureToFind() != null)
-                {
-                    int[] textureToReplace = objectData.getTextureToReplace();
-                    int[] retextureToFind = objectData.getRetextureToFind();
-                    rtFrom = new short[textureToReplace.length];
-                    rtTo = new short[textureToReplace.length];
-
-                    for (int i = 0; i < rtFrom.length; i++)
-                    {
-                        rtFrom[i] = (short) retextureToFind[i];
-                        rtTo[i] = (short) textureToReplace[i];
-                    }
-                }
+                short[] rf = objectData.getRecolorToFind();
+                short[] rt = objectData.getRecolorToReplace();
+                short[] rtFrom = objectData.getRetextureToFind();
+                short[] rtTo = objectData.getTextureToReplace();
 
                 int ambient = objectData.getAmbient();
                 int contrast = objectData.getContrast();
@@ -1386,7 +1109,7 @@ public class DataFinder
                             rtTo,
                             objectData.getModelSizeX(),
                             objectData.getModelSizeY(),
-                            objectData.getModelSizeZ(),
+                            objectData.getModelSizeHeight(),
                             0,
                             customLighting
                     ));
@@ -1407,53 +1130,39 @@ public class DataFinder
 
     private void lookupItemData()
     {
-        final int epoch = loadEpoch;
-        CountDownLatch countDownLatch = new CountDownLatch(1);
-        Request itemRequest = new Request.Builder()
-                .url(config.configBaseUrl() + "item_defs.json")
-                .build();
-        Call itemCall = httpClient.newCall(itemRequest);
-        itemCall.enqueue(new Callback() {
-            @Override
-            public void onFailure(Call call, IOException e)
+        if (client == null || client.getIndexConfig() == null)
+        {
+            return;
+        }
+
+        final int ITEM_CONFIG = 10;
+        int[] ids = client.getIndexConfig().getFileIds(ITEM_CONFIG);
+        Set<Integer> unknownOpcodes = new HashSet<>();
+
+        for (int i : ids)
+        {
+            byte[] data = client.getIndex(2).loadData(ITEM_CONFIG, i);
+            if (data == null)
             {
-                log.debug("Failed to access URL: {}item_defs.json", config.configBaseUrl());
-                countDownLatch.countDown();
-                if (epoch == loadEpoch)
-                {
-                    executeCallbacks(DataType.ITEM);
-                }
+                continue;
             }
 
-            @Override
-            public void onResponse(Call call, Response response)
+            ItemDefinition def = itemLoader.load(unknownOpcodes, i, data);
+            if (def != null)
             {
-                if (response.isSuccessful() && response.body() != null)
-                {
-                    InputStreamReader reader = new InputStreamReader(response.body().byteStream());
-                    Type listType = new TypeToken<List<ItemData>>() {}.getType();
-                    List<ItemData> list = gson.fromJson(reader, listType);
-                    if (epoch == loadEpoch)
-                    {
-                        itemData.addAll(list);
-                        itemData.sort(Comparator.comparing(ItemData::getName));
-                    }
-
-                    response.body().close();
-                }
-                if (epoch == loadEpoch)
-                {
-                    executeCallbacks(DataType.ITEM);
-                }
+                itemData.add(def);
             }
-        });
+        }
+
+        itemData.sort(Comparator.comparing(ItemDefinition::getName));
+        executeCallbacks(DataType.ITEM);
     }
 
     public ModelStats[] findModelsForGroundItem(int itemId, CustomModelType modelType)
     {
         ArrayList<ModelStats> modelStats = new ArrayList<>();
 
-        for (ItemData item : itemData)
+        for (ItemDefinition item : itemData)
         {
             if (item.getId() == itemId)
             {
@@ -1472,50 +1181,10 @@ public class DataFinder
                         modelIds = ArrayUtils.addAll(modelIds, item.getFemaleModel0(), item.getFemaleModel1(), item.getFemaleModel2());
                 }
 
-                short[] rf = new short[0];
-                short[] rt = new short[0];
-
-                if (item.getColorReplace() != null)
-                {
-                    int[] recolorToReplace = item.getColorReplace();
-                    int[] recolorToFind = item.getColorFind();
-                    rf = new short[recolorToReplace.length];
-                    rt = new short[recolorToReplace.length];
-
-                    for (int e = 0; e < rf.length; e++)
-                    {
-                        int rfi = recolorToFind[e];
-                        if (rfi > 32767)
-                        {
-                            rfi -= 65536;
-                        }
-                        rf[e] = (short) rfi;
-
-                        int rti = recolorToReplace[e];
-                        if (rti > 32767)
-                        {
-                            rti -= 65536;
-                        }
-                        rt[e] = (short) rti;
-                    }
-                }
-
-                short[] rtFrom = new short[0];
-                short[] rtTo = new short[0];
-
-                if (item.getTextureReplace() != null)
-                {
-                    int[] textureToReplace = item.getTextureReplace();
-                    int[] retextureToFind = item.getTextureFind();
-                    rtFrom = new short[textureToReplace.length];
-                    rtTo = new short[textureToReplace.length];
-
-                    for (int e = 0; e < rtFrom.length; e++)
-                    {
-                        rtFrom[e] = (short) retextureToFind[e];
-                        rtTo[e] = (short) textureToReplace[e];
-                    }
-                }
+                short[] rf = item.getColorFind();
+                short[] rt = item.getColorReplace();
+                short[] rtFrom = item.getTextureFind();
+                short[] rtTo = item.getTextureReplace();
 
                 LightingStyle ls;
 
@@ -1551,13 +1220,13 @@ public class DataFinder
                     {
                         default:
                         case 0:
-                            wearPos = item.getWearPos0();
-                            break;
-                        case 1:
                             wearPos = item.getWearPos1();
                             break;
-                        case 2:
+                        case 1:
                             wearPos = item.getWearPos2();
+                            break;
+                        case 2:
+                            wearPos = item.getWearPos3();
                     }
 
                     if (id != -1)
@@ -1600,14 +1269,14 @@ public class DataFinder
     private void lookupWeaponAnimationData()
     {
         final int epoch = loadEpoch;
-        Request request = new Request.Builder().url("https://raw.githubusercontent.com/ScreteMonge/cache-converter/refs/heads/master/.venv/weapon_animations.json").build();
+        Request request = new Request.Builder().url(config.configBaseUrl() + "weapon_animations.json").build();
         Call call = httpClient.newCall(request);
         call.enqueue(new Callback()
         {
             @Override
             public void onFailure(Call call, IOException e)
             {
-                log.debug("Failed to access URL: https://raw.githubusercontent.com/ScreteMonge/cache-converter/refs/heads/master/.venv/weapon_animations.json");
+                log.debug("Failed to access URL: {}weapon_animations.json", config.configBaseUrl());
                 if (epoch == loadEpoch)
                 {
                     executeCallbacks(DataType.WEAPON_ANIM);
@@ -1664,14 +1333,14 @@ public class DataFinder
     private void lookupSoundData()
     {
         final int epoch = loadEpoch;
-        Request request = new Request.Builder().url("https://raw.githubusercontent.com/ScreteMonge/cache-converter/refs/heads/master/.venv/sounds.json").build();
+        Request request = new Request.Builder().url(config.configBaseUrl() + "sounds.json").build();
         Call call = httpClient.newCall(request);
         call.enqueue(new Callback()
         {
             @Override
             public void onFailure(Call call, IOException e)
             {
-                log.debug("Failed to access URL: https://raw.githubusercontent.com/ScreteMonge/cache-converter/refs/heads/master/.venv/sounds.json");
+                log.debug("Failed to access URL: {}sounds.json", config.configBaseUrl());
                 if (epoch == loadEpoch)
                 {
                     executeCallbacks(DataType.SOUND);
@@ -1710,7 +1379,7 @@ public class DataFinder
             return DEFAULT_NAME;
         }
 
-        for (KitData data : kitData)
+        for (KitDefinition data : kitData)
         {
             if (data.getModels() != null && Arrays.stream(data.getModels()).anyMatch(e -> e == id))
             {
@@ -1723,7 +1392,7 @@ public class DataFinder
             }
         }
 
-        for (ObjectData data : objectData)
+        for (ObjectDefinition data : objectData)
         {
             if (data.getObjectModels() == null)
             {
@@ -1736,7 +1405,7 @@ public class DataFinder
             }
         }
 
-        for (ItemData data : itemData)
+        for (ItemDefinition data : itemData)
         {
             int[] itemModels = new int[]{
                     data.getFemaleModel0(),
@@ -1756,7 +1425,7 @@ public class DataFinder
             }
         }
 
-        for (SpotanimData data : spotanimData)
+        for (SpotAnimDefinition data : spotanimData)
         {
             if (data.getModelId() == id)
             {

@@ -1,6 +1,7 @@
 package com.creatorskit.swing.timesheet.keyframe.keyframeactions;
 
 import com.creatorskit.swing.timesheet.keyframe.KeyFrame;
+import com.creatorskit.swing.timesheet.keyframe.KeyFrameCategory;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 
@@ -9,5 +10,6 @@ import lombok.Getter;
 public class KeyFrameAction
 {
     private KeyFrameActionType actionType;
+    private KeyFrameCategory category;
     private KeyFrame keyFrame;
 }

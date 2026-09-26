@@ -2,25 +2,28 @@ package com.creatorskit.swing;
 
 import com.creatorskit.CKObject;
 import com.creatorskit.CreatorsConfig;
+import com.creatorskit.hotkeymanager.LocationOption;
 import com.creatorskit.programming.AnimationType;
-import com.creatorskit.saves.CharacterSave;
+import com.creatorskit.programming.orientation.Orientation;
+import com.creatorskit.saves.*;
 import com.creatorskit.CreatorsPlugin;
 import com.creatorskit.Character;
-import com.creatorskit.saves.FolderNodeSave;
-import com.creatorskit.saves.ModelKeyFrameSave;
-import com.creatorskit.saves.SetupSave;
 import com.creatorskit.models.*;
+import com.creatorskit.selection.SelectionCommand;
+import com.creatorskit.selection.SelectionManager;
+import com.creatorskit.selection.SelectionOrigin;
 import com.creatorskit.swing.anvil.ModelAnvil;
 import com.creatorskit.swing.manager.Folder;
 import com.creatorskit.swing.manager.FolderType;
 import com.creatorskit.swing.manager.ManagerPanel;
 import com.creatorskit.swing.manager.ManagerTree;
-import com.creatorskit.swing.timesheet.TimeSheetPanel;
 import com.creatorskit.swing.timesheet.keyframe.*;
+import com.creatorskit.swing.timesheet.keyframe.subtypes.*;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.Model;
+import net.runelite.api.Renderable;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.RuneLite;
@@ -35,6 +38,9 @@ import org.apache.commons.lang3.ArrayUtils;
 import javax.annotation.Nullable;
 import javax.inject.Inject;
 import javax.swing.*;
+import javax.swing.border.Border;
+import javax.swing.border.CompoundBorder;
+import javax.swing.border.EmptyBorder;
 import javax.swing.border.LineBorder;
 import javax.swing.filechooser.FileFilter;
 import javax.swing.tree.DefaultMutableTreeNode;
@@ -43,10 +49,11 @@ import java.awt.*;
 import java.awt.event.*;
 import java.awt.image.BufferedImage;
 import java.io.*;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.time.LocalTime;
 import java.util.*;
+import java.util.List;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -63,6 +70,7 @@ public class CreatorsPanel extends PluginPanel
     private final ModelOrganizer modelOrganizer;
     private final DataFinder dataFinder;
     private final ModelImporter modelImporter;
+    private final SelectionManager selectionManager;
 
     private final JButton addObjectButton = new JButton();
     private final JPanel sidePanel = new JPanel();
@@ -70,7 +78,7 @@ public class CreatorsPanel extends PluginPanel
 
     public static final File SETUP_DIR = new File(RuneLite.RUNELITE_DIR, "creatorskit/setups");
     public static final File CREATORS_DIR = new File(RuneLite.RUNELITE_DIR, "creatorskit");
-    public File lastFileLoaded;
+    private File lastFileLoaded;
 
     private final Pattern pattern = Pattern.compile("\\(\\d+\\)\\Z");
     private int npcPanels = 0;
@@ -84,12 +92,16 @@ public class CreatorsPanel extends PluginPanel
     private final BufferedImage FIND = ImageUtil.loadImageResource(getClass(), "/Find.png");
     private final BufferedImage CUSTOM_MODEL = ImageUtil.loadImageResource(getClass(), "/Custom model.png");
     public static final File MODELS_DIR = new File(RuneLite.RUNELITE_DIR, "creatorskit");
+
     private final LineBorder defaultBorder = new LineBorder(ColorScheme.MEDIUM_GRAY_COLOR, 1);
     private final LineBorder hoveredBorder = new LineBorder(ColorScheme.LIGHT_GRAY_COLOR, 1);
-    private final LineBorder selectedBorder = new LineBorder(Color.WHITE, 1);
+    private final LineBorder selectedBorder = new LineBorder(ColorScheme.BRAND_ORANGE, 1);
+    private final LineBorder firstBorder = new LineBorder(Color.WHITE, 1);
+
+    private boolean bulkEditing = false;
 
     @Inject
-    public CreatorsPanel(@Nullable Client client, CreatorsConfig config, ClientThread clientThread, CreatorsPlugin plugin, ToolBoxFrame toolBox, DataFinder dataFinder, ModelImporter modelImporter)
+    public CreatorsPanel(@Nullable Client client, CreatorsConfig config, ClientThread clientThread, CreatorsPlugin plugin, ToolBoxFrame toolBox, DataFinder dataFinder, ModelImporter modelImporter, SelectionManager selectionManager)
     {
         this.clientThread = clientThread;
         this.client = client;
@@ -100,6 +112,8 @@ public class CreatorsPanel extends PluginPanel
         this.modelAnvil = toolBox.getModelAnvil();
         this.dataFinder = dataFinder;
         this.modelImporter = modelImporter;
+        this.selectionManager = selectionManager;
+        selectionManager.addListener((manager, origin) -> refreshSelectionBorders());
 
         setBackground(ColorScheme.DARK_GRAY_COLOR);
         setLayout(new GridBagLayout());
@@ -145,7 +159,7 @@ public class CreatorsPanel extends PluginPanel
             }
 
             Character character = createCharacter(ParentPanel.SIDE_PANEL);
-            SwingUtilities.invokeLater(() -> addPanel(ParentPanel.SIDE_PANEL, character, true, false));
+            SwingUtilities.invokeLater(() -> addPanel(ParentPanel.SIDE_PANEL, character, true, false, SelectionCommand.SELECT_ONLY));
         });
         add(addObjectButton, c);
 
@@ -184,7 +198,7 @@ public class CreatorsPanel extends PluginPanel
         loadCustomModelButton.setFocusable(false);
         loadCustomModelButton.setToolTipText("Load a previously Saved Model");
         add(loadCustomModelButton, c);
-        loadCustomModelButton.addActionListener(e -> openLoadCustomModelDialog());
+        loadCustomModelButton.addActionListener(e -> modelOrganizer.openLoadDialog());
 
         c.gridx = 2;
         c.gridy = 2;
@@ -192,11 +206,7 @@ public class CreatorsPanel extends PluginPanel
         newSetupButton.setFocusable(false);
         newSetupButton.setToolTipText("Create a new Setup file");
         add(newSetupButton, c);
-        newSetupButton.addActionListener(e ->
-        {
-            Thread thread = new Thread(() -> toolBox.getManagerPanel().getManagerTree().removeAllNodes());
-            thread.start();
-        });
+        newSetupButton.addActionListener(e -> toolBox.createNewSetup(true, false));
 
         c.gridwidth = 3;
         c.gridx = 0;
@@ -222,6 +232,7 @@ public class CreatorsPanel extends PluginPanel
     {
         return createCharacter(
                 parentPanel,
+                UUID.randomUUID().toString(),
                 "Object (" + npcPanels + ")",
                 7699,
                 null,
@@ -230,14 +241,15 @@ public class CreatorsPanel extends PluginPanel
                 -1,
                 -1,
                 60,
-                new KeyFrame[KeyFrameType.getTotalFrameTypes()][0],
+                new KeyFrame[KeyFrameType.getTotalCharacterKeyFrameTypes()][0],
                 KeyFrameType.createDefaultSummary(),
                 getRandomColor(),
-                false, null, null, -1, false, false, false);
+                false, null, null, -1, false, false, LocationOption.TO_SAVED_LOCATION, new int[]{0, 0});
     }
 
     public Character createCharacter(
                               ParentPanel parentPanel,
+                              String id,
                               String name,
                               int modelId,
                               CustomModel customModel,
@@ -255,9 +267,10 @@ public class CreatorsPanel extends PluginPanel
                               int plane,
                               boolean inPOH,
                               boolean transplant,
-                              boolean setHoveredLocation)
+                              LocationOption locationOption,
+                              int[] diff)
     {
-        JPanel objectPanel = new JPanel();
+        ObjectPanel objectPanel = new ObjectPanel();
         objectPanel.setLayout(new GridBagLayout());
 
         JTextField textField = new JTextField(name);
@@ -265,6 +278,9 @@ public class CreatorsPanel extends PluginPanel
         textField.setMaximumSize(textDimension);
         textField.setPreferredSize(textDimension);
         textField.setMinimumSize(textDimension);
+
+        final Border textFieldInnerBorder = textField.getBorder();
+        textField.setBorder(buildNameFieldBorder(textFieldInnerBorder, color));
 
         JPanel topButtonsPanel = new JPanel();
         Dimension topButtonsPanelSize = new Dimension(81, 30);
@@ -304,7 +320,6 @@ public class CreatorsPanel extends PluginPanel
         colourButton.setToolTipText("Rerolls the Object's colour overlays");
         colourButton.setPreferredSize(new Dimension(90, 25));
         colourButton.setFocusable(false);
-        colourButton.setForeground(color);
 
         JPanel framePanel = new JPanel();
         framePanel.setLayout(new BorderLayout());
@@ -443,11 +458,12 @@ public class CreatorsPanel extends PluginPanel
         });
 
         Character character = new Character(
+                id,
                 textField.getText(),
                 active,
                 false,
                 keyFrames,
-                new KeyFrame[KeyFrameType.getTotalFrameTypes()],
+                new KeyFrame[KeyFrameType.getTotalCharacterKeyFrameTypes()],
                 summary,
                 null,
                 null,
@@ -487,19 +503,19 @@ public class CreatorsPanel extends PluginPanel
             }
         });
 
-        switchButton.addActionListener(e -> onSwitchButtonPressed(character));
+        switchButton.addActionListener(e -> onSwitchButtonPressed((e.getModifiers() & ActionEvent.CTRL_MASK) != 0 && selectionManager.contains(character), character));
 
-        deleteButton.addActionListener(e -> onDeleteButtonPressed(character));
+        deleteButton.addActionListener(e -> onDeleteButtonPressed((e.getModifiers() & ActionEvent.CTRL_MASK) != 0 && selectionManager.contains(character), character));
 
-        duplicateButton.addActionListener(e -> onDuplicatePressed(character, false));
-
-        objectPanel.addMouseListener(new MouseAdapter()
+        duplicateButton.addActionListener(e ->
         {
-            @Override
-            public void mousePressed(MouseEvent e)
+            if ((e.getModifiers() & ActionEvent.CTRL_MASK) != 0 && selectionManager.contains(character))
             {
-                setSelectedCharacter(character);
+                getPlugin().getHotKeyManager().onDuplicate(LocationOption.TO_SAVED_LOCATION);
+                return;
             }
+
+            onDuplicatePressed(character, LocationOption.TO_SAVED_LOCATION, new int[]{0, 0}, SelectionCommand.SELECT_ONLY);
         });
 
         objectPanel.addMouseListener(new MouseAdapter()
@@ -517,69 +533,60 @@ public class CreatorsPanel extends PluginPanel
             }
         });
 
-        spawnCheckBox.addActionListener(e -> character.toggleActive(clientThread));
-
-        colourButton.addActionListener(e ->
+        spawnCheckBox.addActionListener(e ->
         {
-            Color colour = getRandomColor();
-            character.setColor(colour);
-            colourButton.setForeground(colour);
+            character.toggleActive(clientThread);
+            propagateActive(character, character.isActive());
         });
+
+        colourButton.addActionListener(e -> showColorPickerFor(character, colourButton));
 
         modelButton.addActionListener(e ->
         {
-            if (character.isCustomMode())
-            {
-                character.setCustomMode(false);
-                modelButton.setText("Id");
-                modelSpinner.setVisible(true);
-                modelComboBox.setVisible(false);
-                plugin.setModel(character, false, (int) modelSpinner.getValue());
-            }
-            else
-            {
-                character.setCustomMode(true);
-                modelButton.setText("Custom");
-                modelSpinner.setVisible(false);
-                modelComboBox.setVisible(true);
-                plugin.setModel(character, true, -1);
-            }
+            boolean newCustomMode = !character.isCustomMode();
+            applyModelMode(character, newCustomMode, modelButton, modelSpinner, modelComboBox);
+            propagateModelMode(character, newCustomMode);
         });
 
         modelSpinner.addChangeListener(e ->
         {
             int modelNumber = (int) modelSpinner.getValue();
-            plugin.setModel(character, false, modelNumber);
+            character.setToBaseModel(client, clientThread, false, modelNumber);
+            propagateSpinner(character, modelNumber, Character::getModelSpinner);
         });
 
-        modelComboBox.addItemListener(e ->
+        modelComboBox.addActionListener(e ->
         {
             CustomModel m = (CustomModel) modelComboBox.getSelectedItem();
             character.setStoredModel(m);
-            if (modelComboBox.isVisible() && character == plugin.getSelectedCharacter())
-                plugin.setModel(character, true, -1);
+            character.setToBaseModel(client, clientThread, true, -1);
+            propagateModelComboBox(character, m);
         });
 
         orientationSpinner.addChangeListener(e ->
         {
-            int orient = (int) orientationSpinner.getValue();
-            plugin.setOrientation(character, orient);
+            int orient = Orientation.boundOrientation((int) orientationSpinner.getValue());
+            character.updateCKOOrientation(orient);
+            propagateSpinner(character, orient, Character::getOrientationSpinner);
         });
 
         animationSpinner.addChangeListener(e ->
         {
             character.setAnimation(clientThread, client, plugin.getRandom(), AnimationType.ACTIVE, (int) animationSpinner.getValue(), (int) animationFrameSpinner.getValue(), config.randomizeStartFrame(), true);
+            propagateSpinner(character, (int) animationSpinner.getValue(), Character::getAnimationSpinner);
         });
 
         animationFrameSpinner.addChangeListener(e ->
         {
             character.setAnimation(clientThread, client, plugin.getRandom(), AnimationType.ACTIVE, (int) animationSpinner.getValue(), (int) animationFrameSpinner.getValue(), config.randomizeStartFrame(), true);
+            propagateSpinner(character, (int) animationFrameSpinner.getValue(), Character::getAnimationFrameSpinner);
         });
 
         radiusSpinner.addChangeListener(e ->
         {
             int rad = (int) radiusSpinner.getValue();
-            plugin.setRadius(character, rad);
+            character.setRadius(clientThread, rad);
+            propagateSpinner(character, rad, Character::getRadiusSpinner);
         });
 
         addAllSelectListeners(
@@ -606,7 +613,13 @@ public class CreatorsPanel extends PluginPanel
                 animationSpinner
         );
 
-        plugin.setupRLObject(character, transplant, setHoveredLocation);
+        int renderMode = Renderable.RENDERMODE_DEFAULT;
+        if (customModeActive && customModel != null)
+        {
+            renderMode = customModel.getComp().getRenderMode();
+        }
+
+        character.setupRLObject(client, clientThread, getToolBox().getProgrammer(), random, config.randomizeStartFrame(), locationOption, transplant, diff, renderMode);
         plugin.getCharacters().add(character);
 
         comboBoxes.add(modelComboBox);
@@ -639,7 +652,7 @@ public class CreatorsPanel extends PluginPanel
         addSelectListeners(objectPanel, character, objectPanel, true);
         addSelectListeners(textField, character, objectPanel, true);
         addSelectListeners(topButtonsPanel, character, objectPanel, true);
-        addSelectListeners(switchButton, character, objectPanel, true);
+        addSelectListeners(switchButton, character, objectPanel, false);
         addSelectListeners(duplicateButton, character, objectPanel, false);
         addSelectListeners(deleteButton, character, objectPanel, false);
         addSelectListeners(modelButton, character, objectPanel, true);
@@ -699,18 +712,18 @@ public class CreatorsPanel extends PluginPanel
             component.addMouseListener(new MouseAdapter() {
                 @Override
                 public void mousePressed(MouseEvent e) {
-                    setSelectedCharacter(character);
+                    onObjectPanelClicked(character, e);
                 }
             });
         }
     }
 
-    public void addPanel(ParentPanel parentPanel, Character character, boolean revalidate, boolean switching)
+    public void addPanel(ParentPanel parentPanel, Character character, boolean revalidate, boolean switching, SelectionCommand selectionCommand)
     {
-        addPanel(parentPanel, character, null, revalidate, switching);
+        addPanel(parentPanel, character, null, revalidate, switching, selectionCommand);
     }
 
-    public void addPanel(ParentPanel parentPanel, Character character, DefaultMutableTreeNode parentNode, boolean revalidate, boolean switching)
+    public void addPanel(ParentPanel parentPanel, Character character, DefaultMutableTreeNode parentNode, boolean revalidate, boolean switching, SelectionCommand selectionCommand)
     {
         JPanel childPanel = character.getObjectPanel();
         ManagerPanel managerPanel = toolBox.getManagerPanel();
@@ -760,25 +773,48 @@ public class CreatorsPanel extends PluginPanel
             npcPanels++;
         }
 
-        setSelectedCharacter(character);
+        if (selectionCommand == SelectionCommand.ADD)
+        {
+            selectionManager.add(character, SelectionOrigin.AUTOMATED);
+        }
+        else
+        {
+            selectionManager.select(character, SelectionOrigin.AUTOMATED);
+        }
     }
 
-    public void onSwitchButtonPressed(Character character)
+    public void onSwitchButtonPressed(boolean propagate, Character character)
+    {
+        if (propagate)
+        {
+            Set<Character> characters = new HashSet<>(selectionManager.getSelected());
+            for (Character c : characters)
+            {
+                switchCharacter(c);
+            }
+
+            return;
+        }
+
+        switchCharacter(character);
+    }
+
+    private void switchCharacter(Character character)
     {
         ParentPanel parentPanel = character.getParentPanel();
         removePanel(character);
 
         if (parentPanel == ParentPanel.SIDE_PANEL)
         {
-            addPanel(ParentPanel.MANAGER, character, true, true);
+            addPanel(ParentPanel.MANAGER, character, false, true, SelectionCommand.SELECT_ONLY);
         }
         else
         {
-            addPanel(ParentPanel.SIDE_PANEL, character, true, true);
+            addPanel(ParentPanel.SIDE_PANEL, character, false, true, SelectionCommand.SELECT_ONLY);
         }
     }
 
-    public void onDuplicatePressed(Character character, boolean setLocation)
+    public void onDuplicatePressed(Character character, LocationOption locationOption, int[] diff, SelectionCommand selectionCommand)
     {
         String newName = character.getName();
         Matcher matcher = pattern.matcher(newName);
@@ -802,37 +838,35 @@ public class CreatorsPanel extends PluginPanel
         ParentPanel parentPanel = character.getParentPanel();
 
         String finalNewName = newName;
-        Thread thread = new Thread(() ->
-        {
-            Character c = createCharacter(
-                    character.getParentPanel(),
-                    finalNewName,
-                    (int) character.getModelSpinner().getValue(),
-                    (CustomModel) character.getComboBox().getSelectedItem(),
-                    character.isCustomMode(),
-                    (int) character.getOrientationSpinner().getValue(),
-                    (int) character.getAnimationSpinner().getValue(),
-                    (int) character.getAnimationFrameSpinner().getValue(),
-                    (int) character.getRadiusSpinner().getValue(),
-                    duplicateKeyFrames(character),
-                    summary,
-                    getRandomColor(),
-                    character.isActive(),
-                    character.getNonInstancedPoint(),
-                    character.getInstancedPoint(),
-                    character.getInstancedPlane(),
-                    character.isInPOH(),
-                    true,
-                    setLocation);
+        Character c = createCharacter(
+                character.getParentPanel(),
+                UUID.randomUUID().toString(),
+                finalNewName,
+                (int) character.getModelSpinner().getValue(),
+                (CustomModel) character.getComboBox().getSelectedItem(),
+                character.isCustomMode(),
+                (int) character.getOrientationSpinner().getValue(),
+                (int) character.getAnimationSpinner().getValue(),
+                (int) character.getAnimationFrameSpinner().getValue(),
+                (int) character.getRadiusSpinner().getValue(),
+                duplicateKeyFrames(character),
+                summary,
+                getRandomColor(),
+                character.isActive(),
+                character.getNonInstancedPoint(),
+                character.getInstancedPoint(),
+                character.getInstancedPlane(),
+                character.isInPOH(),
+                true,
+                locationOption,
+                diff);
 
-            SwingUtilities.invokeLater(() -> addPanel(parentPanel, c, true, false));
-        });
-        thread.start();
+        SwingUtilities.invokeLater(() -> addPanel(parentPanel, c, true, false, selectionCommand));
     }
 
     private KeyFrame[][] duplicateKeyFrames(Character character)
     {
-        KeyFrame[][] duplicatesArrays = new KeyFrame[KeyFrameType.getTotalFrameTypes()][];
+        KeyFrame[][] duplicatesArrays = new KeyFrame[KeyFrameType.getTotalCharacterKeyFrameTypes()][];
 
         KeyFrame[][] originalArrays = character.getFrames();
         for (int i = 0; i < originalArrays.length; i++)
@@ -878,23 +912,27 @@ public class CreatorsPanel extends PluginPanel
         toolBox.repaint();
     }
 
-    public void onDeleteButtonPressed(Character character)
+    public void onDeleteButtonPressed(boolean propagate, Character character)
     {
+        if (propagate)
+        {
+            Character[] characters = selectionManager.getSelected().toArray(new Character[0]);
+            deleteCharacters(characters);
+            return;
+        }
+
         deleteCharacters(new Character[]{character});
     }
 
     public void deleteCharacters(Character[] charactersToRemove)
     {
         removePanels(charactersToRemove);
-        TimeSheetPanel timeSheetPanel = toolBox.getTimeSheetPanel();
 
         ArrayList<Character> characters = plugin.getCharacters();
-        Character selectedCharacter = plugin.getSelectedCharacter();
-        Character tspSelectedCharacter = timeSheetPanel.getSelectedCharacter();
 
-        for (Character c : charactersToRemove)
+        clientThread.invokeLater(() ->
         {
-            clientThread.invokeLater(() ->
+            for (Character c : charactersToRemove)
             {
                 c.getCkObject().setActive(false);
 
@@ -909,20 +947,14 @@ public class CreatorsPanel extends PluginPanel
                 {
                     sp2.setActive(false);
                 }
-            });
-            characters.remove(c);
-            if (c == selectedCharacter)
-            {
-                plugin.setSelectedCharacter(null);
-            }
 
-            if (c == tspSelectedCharacter)
-            {
-                timeSheetPanel.setSelectedCharacter(null);
-            }
+                characters.remove(c);
 
-            toolBox.getTimeSheetPanel().removeKeyFrameActions(c);
-        }
+                toolBox.getCameraManager().onCharacterDeleted(c);
+                selectionManager.remove(c, SelectionOrigin.AUTOMATED);
+                toolBox.getTimeSheetPanel().unstackKeyFrameActions(c);
+            }
+        });
     }
 
     public void removePanels(Character[] characters)
@@ -990,57 +1022,6 @@ public class CreatorsPanel extends PluginPanel
         managerTree.updateTreeSelectionIndex();
     }
 
-    public void clearSidePanels(boolean warning)
-    {
-        if (warning)
-        {
-            int result = JOptionPane.showConfirmDialog(this, "Are you sure you want to delete all Objects from the Side Panel?");
-            if (result != JOptionPane.YES_OPTION)
-                return;
-        }
-
-        for (Character character : sidePanelCharacters)
-        {
-            if (character == plugin.getSelectedCharacter())
-            {
-                unsetSelectedCharacter();
-                break;
-            }
-        }
-
-        Character[] charactersToRemove = sidePanelCharacters.toArray(new Character[sidePanelCharacters.size()]);
-
-        sidePanelCharacters.clear();
-        Thread thread = new Thread(() -> deleteCharacters(charactersToRemove));
-        thread.start();
-        sidePanel.removeAll();
-        sidePanel.repaint();
-        sidePanel.revalidate();
-    }
-
-    public void clearManagerPanels()
-    {
-        ManagerPanel managerPanel = toolBox.getManagerPanel();
-        JPanel objectHolder = managerPanel.getObjectHolder();
-        ArrayList<Character> managerCharacters = managerPanel.getManagerCharacters();
-
-        for (Character character : managerCharacters)
-        {
-            if (character == plugin.getSelectedCharacter())
-            {
-                unsetSelectedCharacter();
-                break;
-            }
-        }
-
-        Character[] charactersToRemove = managerCharacters.toArray(new Character[managerCharacters.size()]);
-
-        objectHolder.removeAll();
-        managerPanel.getManagerTree().resetObjectHolder();
-        Thread thread = new Thread(() -> deleteCharacters(charactersToRemove));
-        thread.start();
-    }
-
     public void resetSidePanel()
     {
         sidePanel.removeAll();
@@ -1058,32 +1039,317 @@ public class CreatorsPanel extends PluginPanel
         sidePanel.revalidate();
     }
 
-    public void setSelectedCharacter(Character selected)
+    public void onObjectPanelClicked(Character character, MouseEvent e)
     {
-        setSelectedCharacter(selected, true);
+        if (e.getButton() == MouseEvent.BUTTON3)
+        {
+            if (e.isControlDown())
+            {
+                selectionManager.remove(character, SelectionOrigin.DIRECT);
+                return;
+            }
+
+            selectionManager.clear(SelectionOrigin.DIRECT);
+            return;
+        }
+
+        if (e.isShiftDown())
+        {
+            Character primary = selectionManager.getPrimary();
+            if (primary == null)
+            {
+                return;
+            }
+
+            ManagerTree tree = toolBox.getManagerPanel().getManagerTree();
+            Set<Character> characters = tree.getCharactersBetween(primary, character);
+            selectionManager.selectAll(characters, SelectionOrigin.DIRECT);
+            selectionManager.setPrimary(primary, SelectionOrigin.DIRECT);
+            return;
+        }
+
+        if (e.isControlDown())
+        {
+            selectionManager.add(character, SelectionOrigin.DIRECT);
+            return;
+        }
+
+        selectionManager.select(character, SelectionOrigin.DIRECT);
     }
 
-    public void setSelectedCharacter(Character selected, boolean updateManagerTree)
+    private static Border buildNameFieldBorder(Border inner, Color accent)
+    {
+        Color safe = accent == null ? ColorScheme.MEDIUM_GRAY_COLOR : accent;
+        Border swatch = BorderFactory.createMatteBorder(0, 6, 0, 0, safe);
+        return BorderFactory.createCompoundBorder(swatch, inner);
+    }
+
+    private static final Color[] COLOUR_PALETTE = new Color[]{
+            new Color(255, 99, 99),    // red
+            new Color(255, 165, 60),   // orange
+            new Color(255, 220, 60),   // yellow
+            new Color(80, 220, 100),   // green
+            new Color(80, 160, 255),   // blue
+            new Color(190, 110, 240),  // purple
+    };
+
+    private void showColorPickerFor(Character character, JButton anchor)
+    {
+        showColorPickerAt(anchor, 0, anchor.getHeight(), character);
+    }
+
+    public void showColorPickerAt(Component invoker, int x, int y, Character target)
+    {
+        JPopupMenu popup = new JPopupMenu();
+        JPanel row = new JPanel(new GridLayout(1, 0, 2, 0));
+        row.setBorder(new EmptyBorder(2, 2, 2, 2));
+
+        Dimension swatchSize = new Dimension(22, 22);
+        for (Color c : COLOUR_PALETTE)
+        {
+            JButton swatch = new JButton();
+            swatch.setBackground(c);
+            swatch.setPreferredSize(swatchSize);
+            swatch.addActionListener(ev ->
+            {
+                applyColorToTargets(target, c);
+                popup.setVisible(false);
+            });
+            row.add(swatch);
+        }
+
+        JButton random = new JButton("?");
+        random.setPreferredSize(swatchSize);
+        random.setToolTipText("Random colour");
+        random.addActionListener(ev ->
+        {
+            applyColorToTargets(target, getRandomColor());
+            popup.setVisible(false);
+        });
+        row.add(random);
+
+        popup.add(row);
+        popup.show(invoker, x, y);
+    }
+
+    private Set<Character> getBulkTargets(Character source)
+    {
+        if (selectionManager.getSelectionSize() > 1 && selectionManager.contains(source))
+        {
+            return new HashSet<>(selectionManager.getSelected());
+        }
+        return Collections.singleton(source);
+    }
+
+    private void propagateSpinner(Character source, Object value, Function<Character, JSpinner> getter)
+    {
+        if (bulkEditing)
+        {
+            return;
+        }
+
+        Set<Character> targets = getBulkTargets(source);
+        if (targets.size() == 1)
+        {
+            return;
+        }
+
+        bulkEditing = true;
+        for (Character c : targets)
+        {
+            if (c == source)
+            {
+                continue;
+            }
+
+            JSpinner s = getter.apply(c);
+            if (!Objects.equals(s.getValue(), value))
+            {
+                s.setValue(value);
+            }
+        }
+
+        bulkEditing = false;
+    }
+
+    private void applyModelMode(Character c, boolean customMode, JButton modelBtn, JSpinner modelSp, JComboBox<CustomModel> modelCb)
+    {
+        c.setCustomMode(customMode);
+        modelBtn.setText(customMode ? "Custom" : "Id");
+        modelSp.setVisible(!customMode);
+        modelCb.setVisible(customMode);
+
+        if (customMode)
+        {
+            c.setToBaseModel(client, clientThread, true, -1);
+        }
+        else
+        {
+            c.setToBaseModel(client, clientThread, false, (int) modelSp.getValue());
+        }
+    }
+
+    private void propagateModelMode(Character source, boolean newCustomMode)
+    {
+        if (bulkEditing)
+        {
+            return;
+        }
+
+        Set<Character> targets = getBulkTargets(source);
+        if (targets.size() == 1)
+        {
+            return;
+        }
+
+        bulkEditing = true;
+        for (Character c : targets)
+        {
+            if (c == source || c.isCustomMode() == newCustomMode)
+            {
+                continue;
+            }
+            applyModelMode(c, newCustomMode, c.getModelButton(), c.getModelSpinner(), c.getComboBox());
+        }
+        bulkEditing = false;
+    }
+
+    private void propagateModelComboBox(Character source, CustomModel m)
+    {
+        if (bulkEditing)
+        {
+            return;
+        }
+
+        Set<Character> targets = getBulkTargets(source);
+        if (targets.size() == 1)
+        {
+            return;
+        }
+
+        bulkEditing = true;
+        for (Character c : targets)
+        {
+            if (c == source)
+            {
+                continue;
+            }
+
+            c.setStoredModel(m);
+            JComboBox<CustomModel> cb = c.getComboBox();
+
+            if (cb.getSelectedItem() != m)
+            {
+                bulkEditing = false;
+                cb.setSelectedItem(m);
+                bulkEditing = true;
+            }
+
+            if (c.isCustomMode())
+            {
+                c.setToBaseModel(client, clientThread, true, -1);
+            }
+        }
+
+        bulkEditing = false;
+    }
+
+    private void propagateActive(Character source, boolean active)
+    {
+        if (bulkEditing)
+        {
+            return;
+        }
+
+        Set<Character> targets = getBulkTargets(source);
+        if (targets.size() == 1)
+        {
+            return;
+        }
+
+        bulkEditing = true;
+        for (Character c : targets)
+        {
+            if (c == source)
+            {
+                continue;
+            }
+
+            if (c.isActive() != active)
+            {
+                JCheckBox cb = c.getSpawnCheckBox();
+                cb.setSelected(active);
+                c.setActive(active, active, true, clientThread);
+            }
+        }
+
+        bulkEditing = false;
+    }
+
+    public void applyColorToTargets(Character clicked, Color color)
+    {
+        Set<Character> selected = selectionManager.getSelected();
+        if (selected.size() > 1 && selected.contains(clicked))
+        {
+            for (Character c : selected)
+            {
+                applyCharacterColor(c, color);
+            }
+        }
+        else
+        {
+            applyCharacterColor(clicked, color);
+        }
+    }
+
+    private void applyCharacterColor(Character c, Color color)
+    {
+        c.setColor(color);
+        JTextField nameField = c.getNameField();
+        CompoundBorder current = (CompoundBorder) nameField.getBorder();
+        Border inner = current.getInsideBorder();
+        nameField.setBorder(buildNameFieldBorder(inner, color));
+    }
+
+    public void refreshSelectionBorders()
     {
         ArrayList<Character> characters = plugin.getCharacters();
+        Character hovered = plugin.getHoveredCharacter();
+        Character first = selectionManager.getPrimary();
 
         for (int i = 0; i < characters.size(); i++)
         {
-            JPanel panel = characters.get(i).getObjectPanel();
+            Character c = characters.get(i);
+            JPanel panel = c.getObjectPanel();
+
+            if (c == first)
+            {
+                panel.setBackground(ColorScheme.DARK_GRAY_COLOR.brighter());
+            }
+            else
+            {
+                panel.setBackground(ColorScheme.DARK_GRAY_COLOR);
+            }
+
+            if (c == first)
+            {
+                panel.setBorder(firstBorder);
+                continue;
+            }
+
+            if (selectionManager.contains(c))
+            {
+                panel.setBorder(selectedBorder);
+                continue;
+            }
+
+            if (c == hovered)
+            {
+                panel.setBorder(hoveredBorder);
+                continue;
+            }
+
             panel.setBorder(defaultBorder);
-        }
-
-        plugin.setSelectedCharacter(selected);
-
-        ManagerTree tree = toolBox.getManagerPanel().getManagerTree();
-        if (updateManagerTree)
-        {
-            tree.setTreeSelection(selected);
-        }
-
-        if (selected != null)
-        {
-            selected.getObjectPanel().setBorder(selectedBorder);
         }
     }
 
@@ -1094,22 +1360,9 @@ public class CreatorsPanel extends PluginPanel
                 scrollSelectedIndex(clicks);
     }
 
-    public void unsetSelectedCharacter()
-    {
-        ArrayList<Character> characters = plugin.getCharacters();
-
-        for (int i = 0; i < characters.size(); i++)
-        {
-            JPanel panel = characters.get(i).getObjectPanel();
-            panel.setBorder(defaultBorder);
-        }
-
-        plugin.setSelectedCharacter(null);
-    }
-
     public void setHoveredCharacter(Character hovered, JPanel jPanel)
     {
-        if (plugin.getSelectedCharacter() == hovered)
+        if (selectionManager.contains(hovered))
         {
             return;
         }
@@ -1122,7 +1375,7 @@ public class CreatorsPanel extends PluginPanel
     {
         plugin.setHoveredCharacter(null);
 
-        if (plugin.getSelectedCharacter() == hoverRemoved)
+        if (selectionManager.contains(hoverRemoved))
         {
             return;
         }
@@ -1130,57 +1383,68 @@ public class CreatorsPanel extends PluginPanel
         jPanel.setBorder(defaultBorder);
     }
 
-    public void addModelOption(CustomModel model, boolean setComboBox)
+    public void addModelOptions(CustomModel[] models, boolean setComboBox)
     {
-        modelOrganizer.createModelPanel(model);
-        Character selectedCharacter = plugin.getSelectedCharacter();
+        modelOrganizer.addModels(models);
+        Character selectedCharacter = selectionManager.getPrimary();
 
-        toolBox.getTimeSheetPanel()
+        JComboBox<CustomModel> modelAttributesBox = toolBox.getTimeSheetPanel()
                 .getAttributePanel()
                 .getModelAttributes()
-                .getCustomModel()
-                .addItem(model);
+                .getCustomModel();
 
-        for (JComboBox<CustomModel> comboBox : comboBoxes)
+        for (int i = 0; i < models.length; i++)
         {
-            comboBox.addItem(model);
-            if (!setComboBox || selectedCharacter == null)
-            {
-                continue;
-            }
+            CustomModel model = models[i];
+            modelAttributesBox.addItem(model);
 
-            JComboBox<CustomModel> selectedBox = selectedCharacter.getComboBox();
-            if (comboBox == selectedBox)
+            for (int e = 0; e < comboBoxes.size(); e++)
             {
-                comboBox.setSelectedItem(model);
-                selectedCharacter.setCustomMode(true);
-                selectedCharacter.getModelButton().setText("Custom");
-
-                if (selectedCharacter.getModelSpinner().isVisible() || comboBox.isVisible())
+                JComboBox<CustomModel> comboBox = comboBoxes.get(e);
+                comboBox.addItem(model);
+                if (!setComboBox || selectedCharacter == null)
                 {
-                    comboBox.setVisible(true);
-                    selectedCharacter.getModelSpinner().setVisible(false);
+                    continue;
                 }
-            }
 
-            selectedCharacter.setStoredModel(model);
-            plugin.setModel(selectedCharacter, true, -1);
+                JComboBox<CustomModel> selectedBox = selectedCharacter.getComboBox();
+                if (comboBox == selectedBox)
+                {
+                    comboBox.setSelectedItem(model);
+                    selectedCharacter.setCustomMode(true);
+                    selectedCharacter.getModelButton().setText("Custom");
+
+                    if (selectedCharacter.getModelSpinner().isVisible() || comboBox.isVisible())
+                    {
+                        comboBox.setVisible(true);
+                        selectedCharacter.getModelSpinner().setVisible(false);
+                    }
+                }
+
+                selectedCharacter.setStoredModel(model);
+                selectedCharacter.setToBaseModel(client, clientThread, true, -1);
+            }
         }
     }
 
-    public void removeModelOption(CustomModel model)
+    public void removeModelOptions(CustomModel[] models)
     {
-        toolBox.getTimeSheetPanel()
+        JComboBox<CustomModel> modelAttributesBox = toolBox.getTimeSheetPanel()
                 .getAttributePanel()
                 .getModelAttributes()
-                .getCustomModel()
-                .removeItem(model);
+                .getCustomModel();
 
-        for (JComboBox<CustomModel> comboBox : comboBoxes)
+        for (CustomModel model : models)
         {
-            comboBox.removeItem(model);
+            modelAttributesBox.removeItem(model);
+
+            for (JComboBox<CustomModel> comboBox : comboBoxes)
+            {
+                comboBox.removeItem(model);
+            }
         }
-        modelOrganizer.removeModelPanel(model);
+
+        modelOrganizer.removeModels(models);
     }
 
     public Color getRandomColor()
@@ -1294,8 +1558,14 @@ public class CreatorsPanel extends PluginPanel
 
         //Get Folder structure and all characters contained within
         FolderNodeSave folderNodeSave = getFolders(comps);
+        CameraScriptSave[] cameraKeyFrames = toolBox.getCameraManager().packCameraKeyFrames();
 
-        SetupSave saveFile = new SetupSave(getPluginVersion(), comps, folderNodeSave, new CharacterSave[0]);
+        SetupSave saveFile = new SetupSave(
+                CreatorsPlugin.getPluginVersion(),
+                comps,
+                folderNodeSave,
+                new CharacterSave[0],
+                cameraKeyFrames);
 
         try
         {
@@ -1405,6 +1675,7 @@ public class CreatorsPanel extends PluginPanel
 
     private CharacterSave createCharacterSave(Character character, CustomModelComp[] comps)
     {
+        String id = character.getId();
         String name = character.getName();
         WorldPoint savedWorldPoint = character.getNonInstancedPoint();
         LocalPoint savedLocalPoint = character.getInstancedPoint();
@@ -1450,6 +1721,7 @@ public class CreatorsPanel extends PluginPanel
                 };
 
         return new CharacterSave(
+                id,
                 name,
                 savedWorldPoint,
                 savedLocalPoint,
@@ -1477,7 +1749,7 @@ public class CreatorsPanel extends PluginPanel
                 character.getSummary());
     }
 
-    public void openLoadSetupDialog()
+    public void openLoadSetupDialog(boolean updateLastLoadedFile)
     {
         SwingUtilities.invokeLater(() ->
         {
@@ -1528,7 +1800,7 @@ public class CreatorsPanel extends PluginPanel
                     Reader reader = Files.newBufferedReader(selectedFile.toPath());
                     SetupSave saveFile = plugin.getGson().fromJson(reader, SetupSave.class);
                     File finalSelectedFile = selectedFile;
-                    clientThread.invokeLater(() -> loadSetup(finalSelectedFile, saveFile));
+                    clientThread.invokeLater(() -> loadSetup(finalSelectedFile, saveFile, updateLastLoadedFile));
                     reader.close();
                     LocalTime time = LocalTime.now();
                     plugin.sendChatMessage("[" + time.getHour() + ":" + time.getMinute() + "] Loaded file: " + getFileName(finalSelectedFile));
@@ -1541,13 +1813,13 @@ public class CreatorsPanel extends PluginPanel
         });
     }
 
-    public void loadSetup(File file)
+    public void loadSetup(File file, boolean updateLastLoadedFile)
     {
         try
         {
             Reader reader = Files.newBufferedReader(file.toPath());
             SetupSave saveFile = plugin.getGson().fromJson(reader, SetupSave.class);
-            clientThread.invokeLater(() -> loadSetup(file, saveFile));
+            clientThread.invokeLater(() -> loadSetup(file, saveFile, updateLastLoadedFile));
             reader.close();
             LocalTime time = LocalTime.now();
             plugin.sendChatMessage("[" + time.getHour() + ":" + time.getMinute() + "] Loaded file: " + getFileName(file));
@@ -1558,10 +1830,15 @@ public class CreatorsPanel extends PluginPanel
         }
     }
 
-    private void loadSetup(File file, SetupSave saveFile)
+    private void loadSetup(File file, SetupSave saveFile, boolean updateLastLoadedFile)
     {
         ModelUtilities modelUtilities = toolBox.getModelUtilities();
-        updateLoadedFile(file);
+
+        if (updateLastLoadedFile || lastFileLoaded == null)
+        {
+            updateLoadedFile(file);
+        }
+
         CustomModelComp[] comps = saveFile.getComps();
         FolderNodeSave folderNodeSave = saveFile.getMasterFolderNode();
         CustomModel[] customModels = new CustomModel[comps.length];
@@ -1578,20 +1855,45 @@ public class CreatorsPanel extends PluginPanel
             CustomModel customModel;
             ModelStats[] modelStats;
 
+            //Compatibility check for version < 2.2.1
+            if (comp.getRenderMode() == null)
+            {
+                int renderMode = Renderable.RENDERMODE_DEFAULT;
+                CustomModelType type = comp.getType();
+                switch (type)
+                {
+                    case CACHE_PLAYER:
+                    case CACHE_NPC:
+                    case FORGED:
+                    case BLENDER:
+                        renderMode = Renderable.RENDERMODE_SORTED_NO_DEPTH;
+                        break;
+                }
+
+                comp.setRenderMode(renderMode);
+            }
+
+            //Compatibility check for version < 2.3.2
+            if (comp.getWidthScale() == null || comp.getHeightScale() == null)
+            {
+                comp.setWidthScale(128);
+                comp.setHeightScale(128);
+            }
+
             switch (comp.getType())
             {
                 case FORGED:
-                    model = modelUtilities.createComplexModel(comp.getDetailedModels(), comp.isPriority(), comp.getLightingStyle(), comp.getCustomLighting(), false);
+                    model = modelUtilities.createComplexModel(comp.getDetailedModels(), comp.isPriority(), comp.getCustomLighting(), false);
                     customModel = new CustomModel(model, comp);
                     break;
                 case CACHE_NPC:
                     modelStats = comp.getModelStats();
-                    model = modelUtilities.constructModelFromCache(modelStats, new int[0], false, LightingStyle.ACTOR, null);
+                    model = modelUtilities.constructModelFromCache(modelStats, new int[0], false, CustomLighting.fromLightingStyle(LightingStyle.ACTOR));
                     customModel = new CustomModel(model, comp);
                     break;
                 case CACHE_PLAYER:
                     modelStats = comp.getModelStats();
-                    model = modelUtilities.constructModelFromCache(modelStats, comp.getKitRecolours(), true, LightingStyle.ACTOR, null);
+                    model = modelUtilities.constructModelFromCache(modelStats, comp.getKitRecolours(), true, CustomLighting.fromLightingStyle(LightingStyle.ACTOR));
                     customModel = new CustomModel(model, comp);
                     break;
                 default:
@@ -1601,17 +1903,18 @@ public class CreatorsPanel extends PluginPanel
                 case CACHE_MAN_WEAR:
                 case CACHE_WOMAN_WEAR:
                     modelStats = comp.getModelStats();
-                    model = modelUtilities.constructModelFromCache(modelStats, null, false, LightingStyle.DEFAULT, null);
+                    model = modelUtilities.constructModelFromCache(modelStats, null, false, CustomLighting.fromLightingStyle(LightingStyle.DEFAULT));
                     customModel = new CustomModel(model, comp);
                     break;
                 case BLENDER:
-                    model = modelImporter.createModel(comp.getBlenderModel(), comp.getLightingStyle());
+                    model = modelImporter.createModel(comp.getBlenderModel(), comp.getCustomLighting());
                     customModel = new CustomModel(model, comp);
             }
 
-            modelUtilities.addCustomModel(customModel, false);
             customModels[i] = customModel;
         }
+
+        modelUtilities.addCustomModels(customModels, false);
 
         ManagerTree managerTree = toolBox.getManagerPanel().getManagerTree();
         DefaultMutableTreeNode rootNode = managerTree.getRootNode();
@@ -1620,11 +1923,18 @@ public class CreatorsPanel extends PluginPanel
 
         SwingUtilities.invokeLater(() ->
         {
+            List<Character> characters = new ArrayList<>();
             if (folderNodeSave != null)
             {
-                openFolderNodeSave(version, managerTree, rootNode, folderNodeSave, customModels);
+                openFolderNodeSave(version, managerTree, characters, rootNode, folderNodeSave, customModels);
                 toolBox.repaint();
                 toolBox.revalidate();
+            }
+
+            toolBox.getCameraManager().unpackCameraKeyFrames(saveFile.getCameraScriptSaves(), characters);
+            for (Character character : characters)
+            {
+                character.rerollId();
             }
         });
 
@@ -1653,10 +1963,11 @@ public class CreatorsPanel extends PluginPanel
                             animFrame = -1;
                         }
 
-                        KeyFrame[][] frames = new KeyFrame[KeyFrameType.getTotalFrameTypes()][];
+                        KeyFrame[][] frames = new KeyFrame[KeyFrameType.getTotalCharacterKeyFrameTypes()][];
 
                         character = createCharacter(
                                 ParentPanel.SIDE_PANEL,
+                                UUID.randomUUID().toString(),
                                 save.getName(),
                                 save.getModelId(),
                                 customModel,
@@ -1674,9 +1985,10 @@ public class CreatorsPanel extends PluginPanel
                                 save.getInstancedPlane(),
                                 save.isInInstance(),
                                 false,
-                                false);
+                                LocationOption.TO_SAVED_LOCATION,
+                                new int[]{0, 0});
 
-                        SwingUtilities.invokeLater(() -> addPanel(ParentPanel.SIDE_PANEL, character, true, false));
+                        SwingUtilities.invokeLater(() -> addPanel(ParentPanel.SIDE_PANEL, character, true, false, SelectionCommand.SELECT_ONLY));
                     }
                 });
                 thread.start();
@@ -1684,7 +1996,7 @@ public class CreatorsPanel extends PluginPanel
         }
     }
 
-    private void openFolderNodeSave(String fileVersion, ManagerTree managerTree, DefaultMutableTreeNode parentNode, FolderNodeSave folderNodeSave, CustomModel[] customModels)
+    private void openFolderNodeSave(String fileVersion, ManagerTree managerTree, List<Character> characters, DefaultMutableTreeNode parentNode, FolderNodeSave folderNodeSave, CustomModel[] customModels)
     {
         String name = folderNodeSave.getName();
         DefaultMutableTreeNode node;
@@ -1692,7 +2004,7 @@ public class CreatorsPanel extends PluginPanel
 
         if (isVersionLessThan(fileVersion, "1.5.4"))
         {
-            node = managerTree.addFolderNode(parentNode, name);
+            node = managerTree.addFolderNode(parentNode, ParentPanel.MANAGER, name);
         }
         else
         {
@@ -1700,7 +2012,7 @@ public class CreatorsPanel extends PluginPanel
             {
                 default:
                 case STANDARD:
-                    node = managerTree.addFolderNode(parentNode, name);
+                    node = managerTree.addFolderNode(parentNode, ParentPanel.MANAGER, name);
                     break;
                 case MASTER:
                 case MANAGER:
@@ -1727,6 +2039,16 @@ public class CreatorsPanel extends PluginPanel
         for (CharacterSave save : folderNodeSave.getCharacterSaves())
         {
             Character character;
+            String id;
+            if (isVersionLessThan(fileVersion, "2.3.3"))
+            {
+                id = UUID.randomUUID().toString();
+            }
+            else
+            {
+                id = save.getId();
+            }
+
             CustomModel customModel = null;
             if (customModels.length > 0)
             {
@@ -1739,14 +2061,14 @@ public class CreatorsPanel extends PluginPanel
                 animFrame = -1;
             }
 
-            KeyFrame[][] frames = new KeyFrame[KeyFrameType.getTotalFrameTypes()][];
+            KeyFrame[][] frames = new KeyFrame[KeyFrameType.getTotalCharacterKeyFrameTypes()][];
             if (save.getMovementKeyFrames() != null)
             {
-                frames[KeyFrameType.getIndex(KeyFrameType.MOVEMENT)] = save.getMovementKeyFrames();
+                frames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.MOVEMENT)] = save.getMovementKeyFrames();
 
                 if (resetTurnRate)
                 {
-                    for (KeyFrame kf : frames[KeyFrameType.getIndex(KeyFrameType.MOVEMENT)])
+                    for (KeyFrame kf : frames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.MOVEMENT)])
                     {
                         MovementKeyFrame keyFrame = (MovementKeyFrame) kf;
                         if (keyFrame.getTurnRate() == -1)
@@ -1759,28 +2081,28 @@ public class CreatorsPanel extends PluginPanel
 
             if (save.getAnimationKeyFrames() != null)
             {
-                frames[KeyFrameType.getIndex(KeyFrameType.ANIMATION)] = save.getAnimationKeyFrames();
+                frames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.ANIMATION)] = save.getAnimationKeyFrames();
             }
 
             if (save.getSpawnKeyFrames() != null)
             {
-                frames[KeyFrameType.getIndex(KeyFrameType.SPAWN)] = save.getSpawnKeyFrames();
+                frames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.SPAWN)] = save.getSpawnKeyFrames();
             }
 
             ModelKeyFrameSave[] modelKeyFrameSaves = save.getModelKeyFrameSaves();
             if (modelKeyFrameSaves != null)
             {
                 ModelKeyFrame[] modelKeyFrames = loadModelKeyFrames(modelKeyFrameSaves, customModels);
-                frames[KeyFrameType.getIndex(KeyFrameType.MODEL)] = modelKeyFrames;
+                frames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.MODEL)] = modelKeyFrames;
             }
 
             if (save.getOrientationKeyFrames() != null)
             {
-                frames[KeyFrameType.getIndex(KeyFrameType.ORIENTATION)] = save.getOrientationKeyFrames();
+                frames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.ORIENTATION)] = save.getOrientationKeyFrames();
 
                 if (resetTurnRate)
                 {
-                    for (KeyFrame kf : frames[KeyFrameType.getIndex(KeyFrameType.ORIENTATION)])
+                    for (KeyFrame kf : frames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.ORIENTATION)])
                     {
                         OrientationKeyFrame keyFrame = (OrientationKeyFrame) kf;
                         if (keyFrame.getTurnRate() == -1)
@@ -1793,33 +2115,33 @@ public class CreatorsPanel extends PluginPanel
 
             if (save.getTextKeyFrames() != null)
             {
-                frames[KeyFrameType.getIndex(KeyFrameType.TEXT)] = save.getTextKeyFrames();
+                frames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.TEXT)] = save.getTextKeyFrames();
             }
 
             if (save.getOverheadKeyFrames() != null)
             {
-                frames[KeyFrameType.getIndex(KeyFrameType.OVERHEAD)] = save.getOverheadKeyFrames();
+                frames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.OVERHEAD)] = save.getOverheadKeyFrames();
             }
 
             if (save.getHealthKeyFrames() != null)
             {
-                frames[KeyFrameType.getIndex(KeyFrameType.HEALTH)] = save.getHealthKeyFrames();
+                frames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.HEALTH)] = save.getHealthKeyFrames();
             }
 
             SpotAnimKeyFrame[][] spotAnimKeyFrames = save.getSpotanimKeyFrames();
             if (save.getSpotanimKeyFrames() != null)
             {
-                frames[KeyFrameType.getIndex(KeyFrameType.SPOTANIM)] = spotAnimKeyFrames[0];
-                frames[KeyFrameType.getIndex(KeyFrameType.SPOTANIM2)] = spotAnimKeyFrames[1];
+                frames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.SPOTANIM)] = spotAnimKeyFrames[0];
+                frames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.SPOTANIM2)] = spotAnimKeyFrames[1];
             }
 
             HitsplatKeyFrame[][] hitsplatKeyFrames = save.getHitsplatKeyFrames();
             if (hitsplatKeyFrames != null)
             {
-                frames[KeyFrameType.getIndex(KeyFrameType.HITSPLAT_1)] = hitsplatKeyFrames[0];
-                frames[KeyFrameType.getIndex(KeyFrameType.HITSPLAT_2)] = hitsplatKeyFrames[1];
-                frames[KeyFrameType.getIndex(KeyFrameType.HITSPLAT_3)] = hitsplatKeyFrames[2];
-                frames[KeyFrameType.getIndex(KeyFrameType.HITSPLAT_4)] = hitsplatKeyFrames[3];
+                frames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.HITSPLAT_1)] = hitsplatKeyFrames[0];
+                frames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.HITSPLAT_2)] = hitsplatKeyFrames[1];
+                frames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.HITSPLAT_3)] = hitsplatKeyFrames[2];
+                frames[KeyFrameType.getCharacterKeyFrameIndex(KeyFrameType.HITSPLAT_4)] = hitsplatKeyFrames[3];
             }
 
             KeyFrameType[] summary;
@@ -1834,6 +2156,7 @@ public class CreatorsPanel extends PluginPanel
 
             character = createCharacter(
                     parentPanel,
+                    id,
                     save.getName(),
                     save.getModelId(),
                     customModel,
@@ -1851,59 +2174,17 @@ public class CreatorsPanel extends PluginPanel
                     save.getInstancedPlane(),
                     save.isInInstance(),
                     false,
-                    false);
+                    LocationOption.TO_SAVED_LOCATION,
+                    new int[]{0, 0});
 
-            addPanel(parentPanel, character, node, false, false);
+            characters.add(character);
+            addPanel(parentPanel, character, node, false, false, SelectionCommand.SELECT_ONLY);
         }
 
         FolderNodeSave[] folderNodeSaves = folderNodeSave.getFolderSaves();
         for (FolderNodeSave fns : folderNodeSaves)
         {
-            openFolderNodeSave(fileVersion, managerTree, node, fns, customModels);
-        }
-    }
-
-    private void openLoadCustomModelDialog()
-    {
-        MODELS_DIR.mkdirs();
-
-        JFileChooser fileChooser = new JFileChooser(MODELS_DIR);
-        fileChooser.setDialogTitle("Choose a model to load");
-
-        JCheckBox priorityCheckbox = new JCheckBox("Set Priority?");
-        priorityCheckbox.setToolTipText("May resolve some rendering issues by setting all faces to the same priority. Leave off if you're unsure");
-
-        JPanel accessory = new JPanel();
-        accessory.setLayout(new GridLayout(0, 1));
-        accessory.add(priorityCheckbox);
-
-        fileChooser.setAccessory(accessory);
-
-        int option = fileChooser.showOpenDialog(fileChooser);
-        if (option == JFileChooser.APPROVE_OPTION)
-        {
-            File selectedFile = fileChooser.getSelectedFile();
-            toolBox.getModelUtilities().loadCustomModel(selectedFile);
-        }
-    }
-
-    private String getPluginVersion()
-    {
-        try (InputStream is = CreatorsPlugin.class.getResourceAsStream("/version.txt"))
-        {
-            if (is == null)
-            {
-                return "0.0.0";
-            }
-
-            String text = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8)).readLine();
-            String version = text.split("=")[1];
-            is.close();
-            return version;
-        }
-        catch (IOException e)
-        {
-            return "0.0.0";
+            openFolderNodeSave(fileVersion, managerTree, characters, node, fns, customModels);
         }
     }
 
@@ -1963,7 +2244,7 @@ public class CreatorsPanel extends PluginPanel
             @Override
             public void actionPerformed(ActionEvent e)
             {
-                plugin.getCreatorsPanel().quickSaveToFile();
+                quickSaveToFile();
             }
         });
 
@@ -1973,7 +2254,7 @@ public class CreatorsPanel extends PluginPanel
             @Override
             public void actionPerformed(ActionEvent e)
             {
-                plugin.getCreatorsPanel().openLoadSetupDialog();
+                toolBox.createNewSetup(false, true);
             }
         });
     }

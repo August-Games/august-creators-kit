@@ -344,11 +344,13 @@ public class TransmogPanel extends JPanel
                 CKObject newTransmog = new CKObject(client);
                 client.registerRuneLiteObject(newTransmog);
 
+                CustomModelComp comp = customModel.getComp();
                 newTransmog.setLoop(false);
                 newTransmog.setFreeze(false);
                 newTransmog.setHasAnimKeyFrame(false);
                 newTransmog.setActive(true);
-                newTransmog.setModel(customModel.getModel());
+                newTransmog.setModel(customModel.getModel(), comp.getWidthScale(), comp.getHeightScale());
+                newTransmog.setRenderMode(comp.getRenderMode());
                 newTransmog.setRadius(radius);
                 newTransmog.setupAnimController(AnimationType.ACTIVE, 0);
                 newTransmog.setupAnimController(AnimationType.POSE, 0);
@@ -377,9 +379,11 @@ public class TransmogPanel extends JPanel
             }
         });
 
+        CustomModelComp comp = customModel.getComp();
         plugin.setTransmogModel(customModel);
-        transmogLabel.setText(customModel.getComp().getName());
-        transmog.setModel(customModel.getModel());
+        transmogLabel.setText(comp.getName());
+        transmog.setModel(customModel.getModel(), comp.getWidthScale(), comp.getHeightScale());
+        transmog.setRenderMode(comp.getRenderMode());
         transmog.setRadius(radius);
     }
 

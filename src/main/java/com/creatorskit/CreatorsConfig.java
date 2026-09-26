@@ -49,7 +49,7 @@ public interface CreatorsConfig extends Config
 	)
 	default boolean enableCtrlHotkeys()
 	{
-		return false;
+		return true;
 	}
 
 	@ConfigItem(
@@ -86,7 +86,7 @@ public interface CreatorsConfig extends Config
 	)
 	default Keybind quickSpawnHotkey()
 	{
-		return new Keybind(KeyEvent.VK_INSERT, 0);
+		return Keybind.NOT_SET;
 	}
 
 	@ConfigItem(
@@ -98,7 +98,7 @@ public interface CreatorsConfig extends Config
 	)
 	default Keybind quickLocationHotkey()
 	{
-		return new Keybind(KeyEvent.VK_HOME, 0);
+		return Keybind.NOT_SET;
 	}
 
 	@ConfigItem(
@@ -122,7 +122,7 @@ public interface CreatorsConfig extends Config
 	)
 	default Keybind quickRotateCWHotkey()
 	{
-		return new Keybind(KeyEvent.VK_DELETE, 0);
+		return Keybind.NOT_SET;
 	}
 
 	@ConfigItem(
@@ -134,19 +134,7 @@ public interface CreatorsConfig extends Config
 	)
 	default Keybind quickRotateCCWHotkey()
 	{
-		return new Keybind(KeyEvent.VK_END, 0);
-	}
-
-	@ConfigItem(
-			keyName = "rotateDegrees",
-			name = "Rotate Degrees",
-			description = "Determines how much the Rotate Hotkeys rotate the Object by",
-			section = sceneSettings,
-			position = 13
-	)
-	default Rotation rotateDegrees()
-	{
-		return Rotation._90_DEGREES;
+		return Keybind.NOT_SET;
 	}
 
 	@ConfigItem(
@@ -154,7 +142,7 @@ public interface CreatorsConfig extends Config
 			name = "Set Orientation Start",
 			description = "Hotkey to set the Start Orientation of an Orientation Keyframe",
 			section = sceneSettings,
-			position = 14
+			position = 13
 	)
 	default Keybind orientationStart()
 	{
@@ -166,7 +154,7 @@ public interface CreatorsConfig extends Config
 			name = "Set Orientation End",
 			description = "Hotkey to set the End Orientation of an Orientation Keyframe",
 			section = sceneSettings,
-			position = 15
+			position = 14
 	)
 	default Keybind orientationEnd()
 	{
@@ -217,11 +205,23 @@ public interface CreatorsConfig extends Config
 	}
 
 	@ConfigItem(
+			keyName = "cameraOverlay",
+			name = "Camera Overlay",
+			description = "Enables an overlay for the camera position",
+			section = overlaySettings,
+			position = 3
+	)
+	default boolean cameraOverlay()
+	{
+		return true;
+	}
+
+	@ConfigItem(
 			keyName = "gameObjectOverlay",
 			name = "Game Object Overlay",
 			description = "Enables an overlay for GameObjects",
 			section = overlaySettings,
-			position = 3
+			position = 4
 	)
 	default boolean gameObjectOverlay()
 	{
@@ -233,7 +233,7 @@ public interface CreatorsConfig extends Config
 			name = "Player Overlay",
 			description = "Enables an overlay for Players",
 			section = overlaySettings,
-			position = 4
+			position = 5
 	)
 	default boolean playerOverlay()
 	{
@@ -245,7 +245,7 @@ public interface CreatorsConfig extends Config
 			name = "NPC Overlay",
 			description = "Enables an overlay for NPCs",
 			section = overlaySettings,
-			position = 5
+			position = 6
 	)
 	default boolean npcOverlay()
 	{
@@ -257,7 +257,7 @@ public interface CreatorsConfig extends Config
 			name = "Ground Object Overlay",
 			description = "Enables an overlay for GroundObjects",
 			section = overlaySettings,
-			position = 6
+			position = 7
 	)
 	default boolean groundObjectOverlay()
 	{
@@ -269,7 +269,7 @@ public interface CreatorsConfig extends Config
 			name = "Wall Object Overlay",
 			description = "Enables an overlay for TileObjects",
 			section = overlaySettings,
-			position = 7
+			position = 8
 	)
 	default boolean wallObjectOverlay()
 	{
@@ -281,7 +281,7 @@ public interface CreatorsConfig extends Config
 			name = "Decorative Object Overlay",
 			description = "Enables an overlay for DecorativeObjects",
 			section = overlaySettings,
-			position = 8
+			position = 9
 	)
 	default boolean decorativeObjectOverlay()
 	{
@@ -293,7 +293,7 @@ public interface CreatorsConfig extends Config
 			name = "Projectile Overlay",
 			description = "Enables an overlay for Projectiles",
 			section = overlaySettings,
-			position = 9
+			position = 10
 	)
 	default boolean projectileOverlay()
 	{
@@ -380,11 +380,23 @@ public interface CreatorsConfig extends Config
 	}
 
 	@ConfigItem(
+			keyName = "keyframeCamera",
+			name = "Keyframe Camera",
+			description = "Hotkey to add a new Camera Keyframe from the current view",
+			section = programmer,
+			position = 6
+	)
+	default Keybind cameraKeyFrameHotkey()
+	{
+		return new Keybind(KeyEvent.VK_Q, KeyEvent.CTRL_DOWN_MASK);
+	}
+
+	@ConfigItem(
 			keyName = "timelineUnits",
 			name = "Timeline Units",
 			description = "Set whether the timeline displays in game ticks or seconds",
 			section = programmer,
-			position = 6
+			position = 7
 	)
 	default TimelineUnits timelineUnits()
 	{
@@ -396,7 +408,7 @@ public interface CreatorsConfig extends Config
 			name = "Randomize Start Frame",
 			description = "Randomizes the start frame of Pose (including default) animations, unless otherwise specified",
 			section = programmer,
-			position = 7
+			position = 8
 	)
 	default boolean randomizeStartFrame()
 	{
@@ -640,7 +652,7 @@ public interface CreatorsConfig extends Config
 	)
 	default ExportFileFormat exportFileFormat()
 	{
-		return ExportFileFormat.BLENDER;
+		return ExportFileFormat.OBJ;
 	}
 
 	@ConfigItem(

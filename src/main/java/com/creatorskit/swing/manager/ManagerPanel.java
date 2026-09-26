@@ -2,13 +2,13 @@ package com.creatorskit.swing.manager;
 
 import com.creatorskit.Character;
 import com.creatorskit.CreatorsPlugin;
+import com.creatorskit.selection.SelectionCommand;
 import com.creatorskit.swing.CreatorsPanel;
 import com.creatorskit.swing.ParentPanel;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.client.ui.ColorScheme;
-import net.runelite.client.ui.FontManager;
 
 import javax.annotation.Nullable;
 import javax.inject.Inject;
@@ -31,7 +31,6 @@ public class ManagerPanel extends JPanel
     private final TreeScrollPane treeScrollPane;
     private final ArrayList<Character> managerCharacters = new ArrayList<>();
     private final ManagerTree managerTree;
-    private final JLabel objectLabel = new JLabel("Current Folder: Master Folder");
 
     @Inject
     public ManagerPanel(@Nullable Client client, CreatorsPlugin plugin, JPanel objectHolder, ManagerTree managerTree)
@@ -88,9 +87,6 @@ public class ManagerPanel extends JPanel
         objectHeader.setLayout(new BorderLayout());
         objectScrollPane.setColumnHeaderView(objectHeader);
 
-        objectLabel.setFont(FontManager.getRunescapeBoldFont());
-        objectHeader.add(objectLabel, BorderLayout.LINE_START);
-
         JPanel rightButtons = new JPanel();
         objectHeader.add(rightButtons, BorderLayout.LINE_END);
 
@@ -111,14 +107,14 @@ public class ManagerPanel extends JPanel
             if (path == null)
             {
                 Character character = creatorsPanel.createCharacter(ParentPanel.MANAGER);
-                creatorsPanel.addPanel(ParentPanel.MANAGER, character, true, false);
+                creatorsPanel.addPanel(ParentPanel.MANAGER, character, true, false, SelectionCommand.SELECT_ONLY);
                 return;
             }
 
             DefaultMutableTreeNode node = (DefaultMutableTreeNode) path.getLastPathComponent();
             ParentPanel parentPanel = managerTree.treeContainsSidePanel(node) ? ParentPanel.SIDE_PANEL : ParentPanel.MANAGER;
             Character character = creatorsPanel.createCharacter(parentPanel);
-            creatorsPanel.addPanel(parentPanel, character, true, false);
+            creatorsPanel.addPanel(parentPanel, character, true, false, SelectionCommand.SELECT_ONLY);
         });
         rightButtons.add(addObjectButton);
 
