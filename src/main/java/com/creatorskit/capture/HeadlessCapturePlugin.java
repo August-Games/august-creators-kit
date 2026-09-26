@@ -423,6 +423,10 @@ public class HeadlessCapturePlugin extends Plugin
 			resetScene();
 			loadSceneFile(resolved);
 			ensureCanvasSize(options);
+			if (System.getProperty("ck.capture.dumpWidgets", "").equals("true"))
+			{
+				dumpWidgets();
+			}
 			cameraAimed = false;
 			parkMouseOffCanvas();
 			quietClientForCapture();
@@ -1018,6 +1022,74 @@ public class HeadlessCapturePlugin extends Plugin
 			if (line.contains("object=false") || line.contains("model=false"))
 			{
 				log.error("Headless capture character without a rendered model: {}", line);
+			}
+		}
+	}
+
+	/**
+	 * Logs the widget tree (group/child, bounds, text) for identifying UI
+	 * to hide from captures. Gated behind ck.capture.dumpWidgets.
+	 */
+	private void dumpWidgets()
+	{
+		CountDownLatch latch = new CountDownLatch(1);
+		clientThread.invokeLater(() ->
+		{
+			try
+			{
+				net.runelite.api.widgets.Widget[] roots = client.getWidgetRoots();
+				if (roots != null)
+				{
+					for (net.runelite.api.widgets.Widget r : roots)
+					{
+						dumpWidget(r, 0);
+					}
+				}
+			}
+			finally
+			{
+				latch.countDown();
+			}
+		});
+		try
+		{
+			latch.await(30, TimeUnit.SECONDS);
+		}
+		catch (Exception e)
+		{
+			log.warn("Headless capture widget dump interrupted");
+		}
+	}
+
+	private void dumpWidget(net.runelite.api.widgets.Widget w, int depth)
+	{
+		if (w == null || depth > 3)
+		{
+			return;
+		}
+		int id = w.getId();
+		java.awt.Rectangle b = w.getBounds();
+		if (b != null && b.width > 0 && b.height > 0 && !w.isHidden())
+		{
+			String text = w.getText();
+			if (text == null)
+			{
+				text = "";
+			}
+			if (text.length() > 40)
+			{
+				text = text.substring(0, 40);
+			}
+			log.warn("Headless capture widget g={} c={} b={},{},{},{} hidden={} text='{}' name='{}'",
+				id >>> 16, id & 0xFFFF, b.x, b.y, b.width, b.height,
+				w.isHidden(), text.replace('\n', '|'), w.getName());
+		}
+		net.runelite.api.widgets.Widget[] kids = w.getChildren();
+		if (kids != null)
+		{
+			for (net.runelite.api.widgets.Widget k : kids)
+			{
+				dumpWidget(k, depth + 1);
 			}
 		}
 	}
