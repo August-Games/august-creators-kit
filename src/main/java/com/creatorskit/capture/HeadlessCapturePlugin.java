@@ -1138,7 +1138,8 @@ public class HeadlessCapturePlugin extends Plugin
 			for (Plugin p : pluginManager.getPlugins())
 			{
 				String name = p.getClass().getSimpleName();
-				if (name.equals("GpuPlugin") || name.equals("BeginnerTooltipsPlugin"))
+				if (name.equals("GpuPlugin") || name.equals("BeginnerTooltipsPlugin")
+					|| name.equals("XpTrackerPlugin"))
 				{
 					try
 					{
