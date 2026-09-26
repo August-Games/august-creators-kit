@@ -329,7 +329,7 @@ public class ModelGetter
         menu.createMenuEntry(0)
                 .setOption(ColorUtil.prependColorTag("Store-Add Spotanims", Color.WHITE))
                 .setType(MenuAction.RUNELITE)
-                .onClick(e -> storeSpotAnims(npc.getSpotAnims()));
+                .onClick(e -> storeSpotAnims(npc, npc.getSpotAnims()));
     }
 
     public void storeNPC(NPC npc, ModelMenuOption menuOption)
@@ -553,7 +553,7 @@ public class ModelGetter
         }
     }
 
-    public void storeSpotAnims(IterableHashTable<ActorSpotAnim> spotAnims)
+    public void storeSpotAnims(Actor actor, IterableHashTable<ActorSpotAnim> spotAnims)
     {
         for (ActorSpotAnim spotAnim : spotAnims)
         {
@@ -568,7 +568,7 @@ public class ModelGetter
             clientThread.invokeLater(() ->
             {
                 CustomLighting lighting = modelStats[0].getLighting();
-                CustomModelComp comp = new CustomModelComp(CustomModelType.CACHE_SPOTANIM, spotAnim.getId(), 128, 128, modelStats, null, null, null, RenderModeCompat.getSpotAnimRenderMode(client, spotAnim), lighting, false, name);
+                CustomModelComp comp = new CustomModelComp(CustomModelType.CACHE_SPOTANIM, spotAnim.getId(), 128, 128, modelStats, null, null, null, RenderModeCompat.getSpotAnimRenderMode(actor), lighting, false, name);
 
                 ModelData modelData = client.loadModelData(modelStats[0].getModelId()).cloneColors().cloneVertices();
                 short[] recolFrom = modelStats[0].getRecolourFrom();
@@ -655,7 +655,7 @@ public class ModelGetter
         menu.createMenuEntry(0)
                 .setOption(ColorUtil.prependColorTag("Store-Add Spotanims", Color.WHITE))
                 .setType(MenuAction.RUNELITE)
-                .onClick(e -> storeSpotAnims(player.getSpotAnims()));
+                .onClick(e -> storeSpotAnims(player, player.getSpotAnims()));
     }
 
     public void storePlayer(Player player, ModelMenuOption menuOption, boolean allowSpotAnim)
