@@ -624,15 +624,12 @@ public class HeadlessCapturePlugin extends Plugin
 			log.warn("Headless capture: no local player for staging; using authored tiles");
 			return;
 		}
-		// The kit places characters from template-space tiles (it maps them
-		// onto the loaded scene itself), so re-base in template space: inside
-		// an instance the player's placed tile would otherwise never match.
-		int[] template = readPlayerTemplateTile();
-		if (template == null)
-		{
-			log.warn("Headless capture: no template tile; using authored tiles");
-			return;
-		}
+		// NonInstancedPoint is consumed literally: the kit maps template to
+		// instance itself, and template-based points provably do not draw
+		// in-instance (cap_probe: text anchors render, models do not). Stage
+		// at the player's actual tile so objects land in the loaded scene in
+		// both the main world and instances.
+		int[] base = pp;
 		CharacterSave[] chars = save.getMasterFolderNode() != null
 			? save.getMasterFolderNode().getCharacterSaves()
 			: null;
@@ -651,11 +648,11 @@ public class HeadlessCapturePlugin extends Plugin
 			WorldPoint p = ch.getNonInstancedPoint();
 			int[] moved = SceneResolver.stageTile(
 				new int[]{p.getX(), p.getY(), p.getPlane()},
-				anchorArr, template, dxdy[0], dxdy[1], 0);
+				anchorArr, base, dxdy[0], dxdy[1], 0);
 			ch.setNonInstancedPoint(new WorldPoint(moved[0], moved[1], moved[2]));
-			log.warn("Headless capture staged {} at {}/{}/{} (player template at {}/{}/{})",
+			log.warn("Headless capture staged {} at {}/{}/{} (player at {}/{}/{})",
 				ch.getName(), moved[0], moved[1], moved[2],
-				template[0], template[1], template[2]);
+				base[0], base[1], base[2]);
 		}
 		log.warn("Headless capture staged {} characters near {}/{}/{}",
 			chars.length, pp[0], pp[1], pp[2]);
@@ -741,40 +738,6 @@ public class HeadlessCapturePlugin extends Plugin
 		return ref.get();
 	}
 
-	/**
-	 * The player's tile in template space (what the kit's own placement
-	 * expects): inside an instance this is the template tile, in the main
-	 * world it is the plain tile.
-	 */
-	private int[] readPlayerTemplateTile() throws Exception
-	{
-		AtomicReference<int[]> ref = new AtomicReference<>();
-		CountDownLatch latch = new CountDownLatch(1);
-		clientThread.invokeLater(() ->
-		{
-			try
-			{
-				if (client.getLocalPlayer() != null)
-				{
-					WorldPoint template = WorldPoint.fromLocalInstance(client,
-						client.getLocalPlayer().getLocalLocation(),
-						client.getLocalPlayer().getWorldLocation().getPlane());
-					if (template != null)
-					{
-						ref.set(new int[]{
-							template.getX(), template.getY(), template.getPlane()});
-					}
-				}
-			}
-			finally
-			{
-				latch.countDown();
-			}
-		});
-		latch.await(30, TimeUnit.SECONDS);
-		return ref.get();
-	}
-
 	/** Clears the current setup so a (re)loaded scene starts clean. */
 	private void resetScene() throws Exception
 	{
@@ -834,6 +797,16 @@ public class HeadlessCapturePlugin extends Plugin
 		{
 			try
 			{
+				ref.get().add("camera xyz=" + client.getCameraX()
+					+ "/" + client.getCameraY() + "/" + client.getCameraZ()
+					+ " yaw=" + client.getCameraYaw()
+					+ " pitch=" + client.getCameraPitch());
+				if (client.getLocalPlayer() != null)
+				{
+					ref.get().add("player tile="
+						+ client.getLocalPlayer().getWorldLocation()
+						+ " local=" + client.getLocalPlayer().getLocalLocation());
+				}
 				for (com.creatorskit.Character ch : creators.getCharacters())
 				{
 					boolean hasObject = ch.getCkObject() != null;
@@ -844,7 +817,11 @@ public class HeadlessCapturePlugin extends Plugin
 						+ " model=" + hasModel
 						+ " active=" + active
 						+ " inScene=" + ch.isInScene()
-						+ " tile=" + ch.getNonInstancedPoint());
+						+ " tile=" + ch.getNonInstancedPoint()
+						+ " mapped=" + (ch.getNonInstancedPoint() == null ? "null"
+							: WorldPoint.toLocalInstance(
+								client.getTopLevelWorldView(),
+								ch.getNonInstancedPoint())));
 				}
 			}
 			catch (Exception e)
@@ -964,6 +941,65 @@ public class HeadlessCapturePlugin extends Plugin
 	 * thread, then consume exactly one completed draw. Frames only ever come
 	 * from completed draws, so there are no gaps.
 	 */
+	/**
+	 * Capture-mode camera override: face the staged actors from the player
+	 * with a slightly elevated pitch so they fill the frame. Disabled with
+	 * ck.capture.aimCamera=false.
+	 */
+	private void aimCameraAtActors() throws Exception
+	{
+		if (!Boolean.parseBoolean(System.getProperty("ck.capture.aimCamera", "true")))
+		{
+			return;
+		}
+		int pitch = Integer.getInteger("ck.capture.pitch", 300);
+		CountDownLatch latch = new CountDownLatch(1);
+		clientThread.invokeLater(() ->
+		{
+			try
+			{
+				if (client.getLocalPlayer() == null)
+				{
+					return;
+				}
+				WorldPoint pp = client.getLocalPlayer().getWorldLocation();
+				double mx = 0;
+				double my = 0;
+				int n = 0;
+				for (com.creatorskit.Character ch : creators.getCharacters())
+				{
+					if (ch.getNonInstancedPoint() == null)
+					{
+						continue;
+					}
+					mx += ch.getNonInstancedPoint().getX();
+					my += ch.getNonInstancedPoint().getY();
+					n++;
+				}
+				if (n == 0)
+				{
+					return;
+				}
+				int dx = (int) Math.round(mx / n - pp.getX());
+				int dy = (int) Math.round(my / n - pp.getY());
+				if (dx == 0 && dy == 0)
+				{
+					return;
+				}
+				int yaw = (int) (Math.atan2(dx, dy) * 325.94932345220167) & 0x7FF;
+				client.setCameraYawTarget(yaw);
+				client.setCameraPitchTarget(pitch);
+				log.warn("Headless capture camera aim: yaw={} actors at +{}/{}",
+					yaw, dx, dy);
+			}
+			finally
+			{
+				latch.countDown();
+			}
+		});
+		latch.await(30, TimeUnit.SECONDS);
+	}
+
 	private BufferedImage seekAndCapture(double tick, CaptureOptions options) throws Exception
 	{
 		SwingUtilities.invokeAndWait(() ->
@@ -976,6 +1012,7 @@ public class HeadlessCapturePlugin extends Plugin
 		{
 			return null;
 		}
+		aimCameraAtActors();
 		if (options.settleMs > 0)
 		{
 			Thread.sleep(options.settleMs);
