@@ -221,7 +221,8 @@ public class HeadlessCapturePlugin extends Plugin
 				"ck.capture.settleMs", "ck.capture.cropViewport",
 				"ck.capture.stageOnPlayer", "ck.capture.stageOffset",
 				"ck.capture.aimCamera", "ck.capture.pitch",
-				"ck.capture.zoom", "ck.capture.canvas"})
+				"ck.capture.zoom", "ck.capture.canvas",
+				"ck.capture.dumpWidgets"})
 			{
 				String sys = System.getProperty(key);
 				if (sys != null)
@@ -241,6 +242,7 @@ public class HeadlessCapturePlugin extends Plugin
 			putIfPresent(props, "ck.capture.pitch", map.get("pitch"));
 			putIfPresent(props, "ck.capture.zoom", map.get("zoom"));
 			putIfPresent(props, "ck.capture.canvas", map.get("canvas"));
+			putIfPresent(props, "ck.capture.dumpWidgets", map.get("dumpWidgets"));
 			if (map.get("times") instanceof List)
 			{
 				StringBuilder sb = new StringBuilder();
@@ -423,7 +425,7 @@ public class HeadlessCapturePlugin extends Plugin
 			resetScene();
 			loadSceneFile(resolved);
 			ensureCanvasSize(options);
-			if (System.getProperty("ck.capture.dumpWidgets", "").equals("true"))
+			if (options.dumpWidgets)
 			{
 				dumpWidgets();
 			}

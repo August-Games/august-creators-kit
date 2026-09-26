@@ -168,13 +168,15 @@ public class CaptureOptionsTest
 			"ck.capture.aimCamera", "false",
 			"ck.capture.pitch", "300",
 			"ck.capture.zoom", "64.0",
-			"ck.capture.canvas", "1540x900"));
+			"ck.capture.canvas", "1540x900",
+			"ck.capture.dumpWidgets", "true"));
 		assertFalse(o.stageOnPlayer);
 		assertEquals("1,0", o.stageOffset);
 		assertFalse(o.aimCamera);
 		assertEquals(300, o.pitch);
 		assertEquals(64, o.zoom);
 		assertEquals("1540x900", o.canvas);
+		assertTrue(o.dumpWidgets);
 	}
 
 	@Test

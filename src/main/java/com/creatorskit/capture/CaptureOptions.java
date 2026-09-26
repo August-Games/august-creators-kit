@@ -46,6 +46,7 @@ public class CaptureOptions
 	public final int pitch;
 	public final int zoom;
 	public final String canvas;
+	public final boolean dumpWidgets;
 
 	private CaptureOptions(
 		Mode mode,
@@ -64,7 +65,8 @@ public class CaptureOptions
 		boolean aimCamera,
 		int pitch,
 		int zoom,
-		String canvas)
+		String canvas,
+		boolean dumpWidgets)
 	{
 		this.mode = mode;
 		this.scene = scene;
@@ -83,6 +85,7 @@ public class CaptureOptions
 		this.pitch = pitch;
 		this.zoom = zoom;
 		this.canvas = canvas;
+		this.dumpWidgets = dumpWidgets;
 	}
 
 	/** Reads options from the live system properties. */
@@ -112,11 +115,12 @@ public class CaptureOptions
 		int pitch = parseInt(get(props, "ck.capture.pitch", null), 335, "ck.capture.pitch");
 		int zoom = parseInt(get(props, "ck.capture.zoom", null), -1, "ck.capture.zoom");
 		String canvas = emptyToNull(get(props, "ck.capture.canvas", null));
+		boolean dumpWidgets = Boolean.parseBoolean(get(props, "ck.capture.dumpWidgets", "false"));
 
 		CaptureOptions options = new CaptureOptions(mode, scene, out, fps,
 			startSec, endSec, stillTimes, requestDir, cropViewport,
 			settleMs, drawTimeoutSec, stageOnPlayer, stageOffset,
-			aimCamera, pitch, zoom, canvas);
+			aimCamera, pitch, zoom, canvas, dumpWidgets);
 		// Bare properties (nothing pointing at a scene or request dir, mode
 		// untouched) mean interactive use: stay idle instead of erroring.
 		options.validate(scene != null || requestDir != null || modeExplicit);
