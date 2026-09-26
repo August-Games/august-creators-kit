@@ -80,10 +80,10 @@ public class CameraUtilities
                 client.getCameraYaw(),
                 client.getVarcIntValue(VarClientID.CAMERA_ZOOM_SMALL),
                 inPOH,
-                client.getCameraFocalPointX(),
+                (float) client.getCameraFocalPointX(),
                 0,
-                client.getCameraFocalPointY(),
-                client.getCameraFocalPointZ(),
+                (float) client.getCameraFocalPointY(),
+                (float) client.getCameraFocalPointZ(),
                 0
         );
     }
@@ -112,7 +112,7 @@ public class CameraUtilities
                 inPOH,
                 wp.getX(),
                 offsetX,
-                client.getCameraFocalPointY(),
+                (float) client.getCameraFocalPointY(),
                 wp.getY(),
                 offsetY
         );

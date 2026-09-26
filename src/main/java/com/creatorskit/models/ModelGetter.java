@@ -2,6 +2,8 @@ package com.creatorskit.models;
 
 import com.creatorskit.Character;
 import com.creatorskit.CreatorsConfig;
+import com.creatorskit.compat.AnimationCompat;
+import com.creatorskit.compat.RenderModeCompat;
 import com.creatorskit.CreatorsPlugin;
 import com.creatorskit.CKObject;
 import com.creatorskit.hotkeymanager.LocationOption;
@@ -566,7 +568,7 @@ public class ModelGetter
             clientThread.invokeLater(() ->
             {
                 CustomLighting lighting = modelStats[0].getLighting();
-                CustomModelComp comp = new CustomModelComp(CustomModelType.CACHE_SPOTANIM, spotAnim.getId(), 128, 128, modelStats, null, null, null, spotAnim.getRenderMode(), lighting, false, name);
+                CustomModelComp comp = new CustomModelComp(CustomModelType.CACHE_SPOTANIM, spotAnim.getId(), 128, 128, modelStats, null, null, null, RenderModeCompat.getSpotAnimRenderMode(client, spotAnim), lighting, false, name);
 
                 ModelData modelData = client.loadModelData(modelStats[0].getModelId()).cloneColors().cloneVertices();
                 short[] recolFrom = modelStats[0].getRecolourFrom();
@@ -682,8 +684,8 @@ public class ModelGetter
         }
 
         Animation animation = client.loadAnimation(animId);
-        int leftHandItem = animation.getLeftHandItem();
-        int rightHandItem = animation.getRightHandItem();
+        int leftHandItem = AnimationCompat.getLeftHandItem(client, animation.getId());
+        int rightHandItem = AnimationCompat.getRightHandItem(client, animation.getId());
 
         String name = player.getName();
         if (player == client.getLocalPlayer())
@@ -806,8 +808,8 @@ public class ModelGetter
         }
 
         Animation animation = client.loadAnimation(finalAnimId);
-        int leftHandItem = animation.getLeftHandItem();
-        int rightHandItem = animation.getRightHandItem();
+        int leftHandItem = AnimationCompat.getLeftHandItem(client, animation.getId());
+        int rightHandItem = AnimationCompat.getRightHandItem(client, animation.getId());
 
         Model model = player.getModel();
         int vCount = model.getVerticesCount();

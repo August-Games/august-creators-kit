@@ -15,6 +15,14 @@ public class CKObject extends RuneLiteObjectController
 {
     private final Client client;
     private Model baseModel;
+    /**
+     * Requested scene draw mode for this object, mirroring the render-mode
+     * field newer RuneLite carries on its object controller. The pinned
+     * client has no per-object draw-mode override, so the value round-trips
+     * here (and through saved setups) but only the default mode draws
+     * differently in the scene.
+     */
+    private int renderMode = Renderable.RENDERMODE_DEFAULT;
     private int widthScale;
     private int heightScale;
     private boolean freeze;
