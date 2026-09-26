@@ -26,6 +26,7 @@ import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.PlayerComposition;
 import net.runelite.api.ScriptID;
+import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.gameval.VarClientID;
 import net.runelite.api.events.GameStateChanged;
@@ -194,6 +195,7 @@ public class HeadlessCapturePlugin extends Plugin
 			setLiveIfPresent("ck.capture.aimCamera", map.get("aimCamera"));
 			setLiveIfPresent("ck.capture.pitch", map.get("pitch"));
 			setLiveIfPresent("ck.capture.zoom", map.get("zoom"));
+			setLiveIfPresent("ck.capture.canvas", map.get("canvas"));
 			CaptureOptions job = CaptureOptions.fromProperties(props);
 			int code = runJob(job.scene, job.out, job, null);
 			writeSentinel(new File(job.out), base, code == 0, code == 0 ? "ok" : "job failed");
@@ -327,6 +329,8 @@ public class HeadlessCapturePlugin extends Plugin
 
 			resetScene();
 			loadSceneFile(resolved);
+			ensureCanvasSize();
+			cameraAimed = false;
 			parkMouseOffCanvas();
 			quietClientForCapture();
 
@@ -989,15 +993,16 @@ public class HeadlessCapturePlugin extends Plugin
 		return frames;
 	}
 
+	private int lastAimYaw = -1;
+
+	private int lastAimPitch = -1;
+
+	private boolean cameraAimed = false;
+
 	/**
-	 * Paused seek: set the time on the UI thread, settle on the client
-	 * thread, then consume exactly one completed draw. Frames only ever come
-	 * from completed draws, so there are no gaps.
-	 */
-	/**
-	 * Capture-mode camera override: face the staged actors from the player
-	 * with a slightly elevated pitch so they fill the frame. Disabled with
-	 * ck.capture.aimCamera=false.
+	 * Capture-mode camera override: focal point on the staged actors (they
+	 * stay centred, the capturing player drops out of frame), yaw facing
+	 * them, configured pitch/zoom. Disabled with ck.capture.aimCamera=false.
 	 */
 	private void aimCameraAtActors() throws Exception
 	{
@@ -1047,8 +1052,22 @@ public class HeadlessCapturePlugin extends Plugin
 				{
 					client.runScript(ScriptID.CAMERA_DO_ZOOM, zoom, zoom);
 				}
-				log.warn("Headless capture camera aim: yaw={} pitch={} zoom={} actors at +{}/{}",
-					yaw, pitch, zoom, dx, dy);
+				String focal = "kept";
+				LocalPoint lp = LocalPoint.fromWorld(
+					client.getTopLevelWorldView(),
+					new WorldPoint((int) Math.round(mx / n),
+						(int) Math.round(my / n),
+						client.getTopLevelWorldView().getPlane()));
+				if (lp != null)
+				{
+					client.setCameraFocalPointX(lp.getX());
+					client.setCameraFocalPointZ(lp.getY());
+					focal = lp.getX() + "/" + lp.getY();
+				}
+				lastAimYaw = yaw;
+				lastAimPitch = pitch;
+				log.warn("Headless capture camera aim: yaw={} pitch={} zoom={} focal={} actors at +{}/{}",
+					yaw, pitch, zoom, focal, dx, dy);
 			}
 			finally
 			{
@@ -1058,6 +1077,94 @@ public class HeadlessCapturePlugin extends Plugin
 		latch.await(30, TimeUnit.SECONDS);
 	}
 
+	/**
+	 * Waits until the camera eases onto the last aim (or a timeout), so
+	 * every frame of a job shares one converged pose instead of catching
+	 * mid-ease jitter.
+	 */
+	private void convergeCamera() throws Exception
+	{
+		if (lastAimYaw < 0)
+		{
+			return;
+		}
+		long end = System.currentTimeMillis() + 8000;
+		while (System.currentTimeMillis() < end)
+		{
+			AtomicReference<int[]> ref = new AtomicReference<>();
+			CountDownLatch latch = new CountDownLatch(1);
+			clientThread.invokeLater(() ->
+			{
+				ref.set(new int[]{client.getCameraYaw(), client.getCameraPitch()});
+				latch.countDown();
+			});
+			latch.await(30, TimeUnit.SECONDS);
+			int[] cur = ref.get();
+			int dyaw = Math.abs(cur[0] - lastAimYaw) % 2048;
+			dyaw = Math.min(dyaw, 2048 - dyaw);
+			if (dyaw <= 6 && Math.abs(cur[1] - lastAimPitch) <= 6)
+			{
+				log.warn("Headless capture camera converged");
+				return;
+			}
+			Thread.sleep(150);
+		}
+		log.warn("Headless capture camera did not converge in time");
+	}
+
+	/**
+	 * Resizes the game canvas (e.g. ck.capture.canvas=1540x900) so the
+	 * captured viewport reaches the requested size 1:1. Best effort.
+	 */
+	private void ensureCanvasSize()
+	{
+		String raw = System.getProperty("ck.capture.canvas", "").trim();
+		String[] wh = raw.split("x");
+		if (wh.length != 2)
+		{
+			return;
+		}
+		try
+		{
+			int wantW = Integer.parseInt(wh[0].trim());
+			int wantH = Integer.parseInt(wh[1].trim());
+			for (int pass = 0; pass < 2; pass++)
+			{
+				SwingUtilities.invokeAndWait(() ->
+				{
+					java.awt.Window win =
+						SwingUtilities.getWindowAncestor(client.getCanvas());
+					if (win == null)
+					{
+						return;
+					}
+					java.awt.Dimension fs = win.getSize();
+					win.setSize(fs.width + (wantW - client.getCanvasWidth()),
+						fs.height + (wantH - client.getCanvasHeight()));
+					win.validate();
+				});
+				Thread.sleep(2000);
+				if (client.getCanvasWidth() == wantW
+					&& client.getCanvasHeight() == wantH)
+				{
+					break;
+				}
+			}
+			log.warn("Headless capture canvas now {}x{} viewport {}x{}",
+				client.getCanvasWidth(), client.getCanvasHeight(),
+				client.getViewportWidth(), client.getViewportHeight());
+		}
+		catch (Exception e)
+		{
+			log.warn("Headless capture canvas resize failed: {}", e.toString());
+		}
+	}
+
+	/**
+	 * Paused seek: set the time on the UI thread, settle on the client
+	 * thread, then consume exactly one completed draw. Frames only ever come
+	 * from completed draws, so there are no gaps.
+	 */
 	private BufferedImage seekAndCapture(double tick, CaptureOptions options) throws Exception
 	{
 		SwingUtilities.invokeAndWait(() ->
@@ -1070,7 +1177,12 @@ public class HeadlessCapturePlugin extends Plugin
 		{
 			return null;
 		}
-		aimCameraAtActors();
+		if (!cameraAimed)
+		{
+			aimCameraAtActors();
+			convergeCamera();
+			cameraAimed = true;
+		}
 		if (options.settleMs > 0)
 		{
 			Thread.sleep(options.settleMs);

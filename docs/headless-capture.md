@@ -34,6 +34,7 @@ unaffected.
 | `ck.capture.aimCamera` | `true` | Face the staged actors from the player before each frame |
 | `ck.capture.pitch` | `335` | Camera pitch applied by the aim override |
 | `ck.capture.zoom` | unset | Camera zoom applied by the aim override (higher = closer); unset leaves it alone |
+| `ck.capture.canvas` | unset | Resize the game canvas to `WxH` (e.g. `1540x900`) so the captured viewport reaches full size 1:1 |
 | `ck.capture.settleMs` | `500` | Settle delay after each seek, ms |
 | `ck.capture.drawTimeoutSec` | `30` | Per-frame completed-draw timeout, s |
 
