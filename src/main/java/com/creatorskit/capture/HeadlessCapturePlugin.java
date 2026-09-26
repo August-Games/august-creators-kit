@@ -1286,6 +1286,14 @@ public class HeadlessCapturePlugin extends Plugin
 					}
 					winInfo[0] = win.getClass().getName()
 						+ " frame=" + win.getSize().width + "x" + win.getSize().height;
+					// The layout pins the canvas to its preferred size, so
+					// growing the frame alone never reaches it: size the
+					// canvas directly, then fit the frame around it.
+					java.awt.Dimension want =
+						new java.awt.Dimension(wantW, wantH);
+					client.getCanvas().setPreferredSize(want);
+					client.getCanvas().setMinimumSize(want);
+					client.getCanvas().setSize(wantW, wantH);
 					java.awt.Dimension fs = win.getSize();
 					win.setSize(fs.width + (wantW - client.getCanvasWidth()),
 						fs.height + (wantH - client.getCanvasHeight()));
