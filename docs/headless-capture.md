@@ -29,7 +29,7 @@ unaffected.
 | `ck.capture.times` | — | Comma-separated scene seconds. Required in stills |
 | `ck.capture.requestDir` | — | Request directory. Required in daemon |
 | `ck.capture.cropViewport` | `false` | Crop frames to the 3D viewport |
-| `ck.capture.stageOnPlayer` | `true` | Re-base spawn tiles around the local player |
+| `ck.capture.stageOnPlayer` | `true` | Re-base spawn tiles around the local player (waits for its tile to settle first) |
 | `ck.capture.stageOffset` | `2,0` | Extra tile offset applied when staging |
 | `ck.capture.settleMs` | `500` | Settle delay after each seek, ms |
 | `ck.capture.drawTimeoutSec` | `30` | Per-frame completed-draw timeout, s |

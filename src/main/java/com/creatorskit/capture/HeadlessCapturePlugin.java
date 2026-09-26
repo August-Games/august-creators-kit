@@ -226,12 +226,26 @@ public class HeadlessCapturePlugin extends Plugin
 	{
 		try
 		{
-			waitFor(GameState.LOGIN_SCREEN, 300_000, "login screen");
-			reloadCatalogs();
+			// The login screen may already be gone (late plugin start, or a
+			// daemon job after the first login): only wait for it when the
+			// client is still pre-login.
+			GameState state = client.getGameState();
+			if (state != GameState.LOGGING_IN
+				&& state != GameState.LOADING
+				&& state != GameState.LOGGED_IN)
+			{
+				waitFor(GameState.LOGIN_SCREEN, 300_000, "login screen");
+			}
+			else
+			{
+				log.warn("Headless capture already past the login screen ({}), "
+					+ "skipping screen wait", state);
+			}
 			if (!waitFor(GameState.LOGGED_IN, 600_000, "login"))
 			{
 				return fail(outPath, options, "timed out waiting for login");
 			}
+			reloadCatalogs();
 			waitCatalog();
 
 			SetupSave save = readScene(scenePath);
@@ -273,14 +287,22 @@ public class HeadlessCapturePlugin extends Plugin
 
 			File out = new File(outPath);
 			out.mkdirs();
+			// Stage first: the resolved file must match what actually plays,
+			// or the actors end up at the authored tiles while the camera
+			// follows the capturing player elsewhere.
+			stageOnPlayer(save);
 			File resolved = new File(out, "resolved_scene.json");
 			Files.write(resolved.toPath(),
 				creators.getGson().toJson(save).getBytes(StandardCharsets.UTF_8));
 
 			resetScene();
-			stageOnPlayer(save);
 			loadSceneFile(resolved);
 			disableGpuForCpuCapture();
+
+			List<String> spawned = spawnedCharacterNames();
+			log.warn("Headless capture spawned {} characters: {}",
+				spawned.size(), spawned);
+			reportSpawnHealth();
 
 			List<FrameMeta> frames = captureAll(save, times, out, options);
 			if (frames == null)
@@ -596,25 +618,7 @@ public class HeadlessCapturePlugin extends Plugin
 			return;
 		}
 		int[] dxdy = parseOffset(System.getProperty("ck.capture.stageOffset", "2,0"));
-		AtomicReference<int[]> posRef = new AtomicReference<>();
-		CountDownLatch latch = new CountDownLatch(1);
-		clientThread.invokeLater(() ->
-		{
-			try
-			{
-				if (client.getLocalPlayer() != null)
-				{
-					WorldPoint wp = client.getLocalPlayer().getWorldLocation();
-					posRef.set(new int[]{wp.getX(), wp.getY(), wp.getPlane()});
-				}
-			}
-			finally
-			{
-				latch.countDown();
-			}
-		});
-		latch.await(30, TimeUnit.SECONDS);
-		int[] pp = posRef.get();
+		int[] pp = readStablePlayerTile();
 		if (pp == null)
 		{
 			log.warn("Headless capture: no local player for staging; using authored tiles");
@@ -638,8 +642,12 @@ public class HeadlessCapturePlugin extends Plugin
 				continue;
 			}
 			WorldPoint p = ch.getNonInstancedPoint();
-			ch.setNonInstancedPoint(new WorldPoint(
-				p.getX() + dx, p.getY() + dy, p.getPlane() + dz));
+			WorldPoint moved = new WorldPoint(
+				p.getX() + dx, p.getY() + dy, p.getPlane() + dz);
+			ch.setNonInstancedPoint(moved);
+			log.warn("Headless capture staged {} at {}/{}/{} (player at {}/{}/{})",
+				ch.getName(), moved.getX(), moved.getY(), moved.getPlane(),
+				pp[0], pp[1], pp[2]);
 		}
 		log.warn("Headless capture staged {} characters near {}/{}/{}",
 			chars.length, pp[0], pp[1], pp[2]);
@@ -656,6 +664,73 @@ public class HeadlessCapturePlugin extends Plugin
 		{
 			return new int[]{2, 0};
 		}
+	}
+
+	/**
+	 * Reads the local player tile once it stops moving. Hosts may teleport
+	 * the player after login (spawn staging); capturing the tile mid-teleport
+	 * strands the scene where the player used to be. Polls until the tile is
+	 * unchanged for three consecutive reads, with a bounded total wait.
+	 *
+	 * @return {x, y, plane}, or null when no local player appears
+	 */
+	private int[] readStablePlayerTile() throws Exception
+	{
+		int[] last = null;
+		int stable = 0;
+		long end = System.currentTimeMillis() + 90_000;
+		while (System.currentTimeMillis() < end)
+		{
+			int[] cur = readPlayerTile();
+			if (cur != null
+				&& last != null
+				&& cur[0] == last[0] && cur[1] == last[1] && cur[2] == last[2])
+			{
+				if (++stable >= 3)
+				{
+					log.warn("Headless capture player tile settled at {}/{}/{}",
+						cur[0], cur[1], cur[2]);
+					return cur;
+				}
+			}
+			else
+			{
+				stable = 0;
+				if (cur != null
+					&& (last == null || cur[0] != last[0] || cur[1] != last[1] || cur[2] != last[2]))
+				{
+					log.warn("Headless capture player tile now {}/{}/{}",
+						cur[0], cur[1], cur[2]);
+				}
+			}
+			last = cur;
+			Thread.sleep(2000);
+		}
+		log.warn("Headless capture player tile never settled; using latest");
+		return last;
+	}
+
+	private int[] readPlayerTile() throws Exception
+	{
+		AtomicReference<int[]> ref = new AtomicReference<>();
+		CountDownLatch latch = new CountDownLatch(1);
+		clientThread.invokeLater(() ->
+		{
+			try
+			{
+				if (client.getLocalPlayer() != null)
+				{
+					WorldPoint wp = client.getLocalPlayer().getWorldLocation();
+					ref.set(new int[]{wp.getX(), wp.getY(), wp.getPlane()});
+				}
+			}
+			finally
+			{
+				latch.countDown();
+			}
+		});
+		latch.await(30, TimeUnit.SECONDS);
+		return ref.get();
 	}
 
 	/** Clears the current setup so a (re)loaded scene starts clean. */
@@ -684,6 +759,68 @@ public class HeadlessCapturePlugin extends Plugin
 		SwingUtilities.invokeAndWait(() ->
 			creators.getCreatorsPanel().loadSetup(file, false));
 		Thread.sleep(10_000);
+	}
+
+	/** Names of the kit characters currently spawned (scene census). */
+	private List<String> spawnedCharacterNames()
+	{
+		List<String> names = new ArrayList<>();
+		try
+		{
+			for (com.creatorskit.Character ch : creators.getCharacters())
+			{
+				names.add(ch.getName());
+			}
+		}
+		catch (Exception e)
+		{
+			log.error("Headless capture could not list characters", e);
+		}
+		return names;
+	}
+
+	/**
+	 * Spawn health: every character should own a live scene object with a
+	 * model after load. A character without one renders nothing; warn loudly
+	 * instead of capturing an empty scene.
+	 */
+	private void reportSpawnHealth() throws Exception
+	{
+		AtomicReference<List<String>> ref = new AtomicReference<>(new ArrayList<>());
+		CountDownLatch latch = new CountDownLatch(1);
+		clientThread.invokeLater(() ->
+		{
+			try
+			{
+				for (com.creatorskit.Character ch : creators.getCharacters())
+				{
+					boolean hasObject = ch.getCkObject() != null;
+					boolean hasModel = hasObject && ch.getCkObject().getModel() != null;
+					boolean active = hasObject && ch.getCkObject().isActive();
+					ref.get().add(ch.getName()
+						+ " object=" + hasObject
+						+ " model=" + hasModel
+						+ " active=" + active);
+				}
+			}
+			catch (Exception e)
+			{
+				log.error("Headless capture spawn health check failed", e);
+			}
+			finally
+			{
+				latch.countDown();
+			}
+		});
+		latch.await(30, TimeUnit.SECONDS);
+		for (String line : ref.get())
+		{
+			log.warn("Headless capture spawn: {}", line);
+			if (line.contains("object=false") || line.contains("model=false"))
+			{
+				log.error("Headless capture character without a rendered model: {}", line);
+			}
+		}
 	}
 
 	/**

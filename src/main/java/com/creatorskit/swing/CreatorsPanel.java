@@ -1911,6 +1911,13 @@ public class CreatorsPanel extends PluginPanel
                     customModel = new CustomModel(model, comp);
             }
 
+            if (model == null)
+            {
+                log.warn("Scene load: comp {} ({}) produced no model ({} stats)",
+                    i, comp.getType(),
+                    comp.getModelStats() == null ? "null" : comp.getModelStats().length);
+            }
+
             customModels[i] = customModel;
         }
 
