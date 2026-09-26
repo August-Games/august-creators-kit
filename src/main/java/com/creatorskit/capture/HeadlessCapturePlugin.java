@@ -218,6 +218,20 @@ public class HeadlessCapturePlugin extends Plugin
 		}
 	}
 
+	/** System property as int, tolerant of Gson's 64.0-style doubles. */
+	private static int sysInt(String key, int def)
+	{
+		try
+		{
+			return (int) Double.parseDouble(System.getProperty(key,
+				Integer.toString(def)));
+		}
+		catch (Exception e)
+		{
+			return def;
+		}
+	}
+
 	private static void setLiveIfPresent(String key, Object v)
 	{
 		if (v != null)
@@ -991,7 +1005,7 @@ public class HeadlessCapturePlugin extends Plugin
 		{
 			return;
 		}
-		int pitch = Integer.getInteger("ck.capture.pitch", 335);
+		int pitch = sysInt("ck.capture.pitch", 335);
 		CountDownLatch latch = new CountDownLatch(1);
 		clientThread.invokeLater(() ->
 		{
@@ -1028,7 +1042,7 @@ public class HeadlessCapturePlugin extends Plugin
 				int yaw = (int) (Math.atan2(dx, dy) * 325.94932345220167) & 0x7FF;
 				client.setCameraYawTarget(yaw);
 				client.setCameraPitchTarget(pitch);
-				int zoom = Integer.getInteger("ck.capture.zoom", -1);
+				int zoom = sysInt("ck.capture.zoom", -1);
 				if (zoom > 0)
 				{
 					client.runScript(ScriptID.CAMERA_DO_ZOOM, zoom, zoom);
