@@ -148,6 +148,22 @@ public final class SceneResolver
 		return false;
 	}
 
+	/**
+	 * Re-bases one authored tile onto the player in a shared coordinate
+	 * space (template space inside instances, plain tiles otherwise):
+	 * {@code player + (authored - anchor) + (dx, dy, dz)}. All three inputs
+	 * must use the same space; each is {x, y, plane}.
+	 */
+	public static int[] stageTile(
+		int[] authored, int[] anchor, int[] player, int dx, int dy, int dz)
+	{
+		return new int[]{
+			player[0] + (authored[0] - anchor[0]) + dx,
+			player[1] + (authored[1] - anchor[1]) + dy,
+			player[2] + (authored[2] - anchor[2]) + dz,
+		};
+	}
+
 	/** Human-readable one-line summary of why a comp cannot play. */
 	public static String describeBlocker(int index, CustomModelComp comp)
 	{

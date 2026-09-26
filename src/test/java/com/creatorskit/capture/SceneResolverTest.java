@@ -7,6 +7,7 @@ import java.util.HashMap;
 import java.util.Map;
 import org.junit.Test;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
@@ -89,6 +90,20 @@ public class SceneResolverTest
 		assertNull(SceneResolver.slotToKitIndex("ammo"));
 		assertNull(SceneResolver.slotToKitIndex("cape_of_many_things"));
 		assertNull(SceneResolver.slotToKitIndex(null));
+	}
+
+	@Test
+	public void stageTilePreservesRelativeLayout()
+	{
+		int[] anchor = {3226, 3230, 0};
+		int[] player = {3226, 3230, 0};
+		assertArrayEquals(new int[]{3230, 3230, 0}, SceneResolver.stageTile(
+			new int[]{3228, 3230, 0}, anchor, player, 2, 0, 0));
+		assertArrayEquals(new int[]{3228, 3230, 0}, SceneResolver.stageTile(
+			anchor, anchor, player, 2, 0, 0));
+		// the player plane wins when authored and anchor agree
+		assertArrayEquals(new int[]{10, 12, 2}, SceneResolver.stageTile(
+			new int[]{5, 5, 1}, new int[]{5, 5, 1}, new int[]{8, 12, 2}, 2, 0, 0));
 	}
 
 	@Test

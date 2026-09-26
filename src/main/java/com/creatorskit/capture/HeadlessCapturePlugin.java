@@ -624,6 +624,15 @@ public class HeadlessCapturePlugin extends Plugin
 			log.warn("Headless capture: no local player for staging; using authored tiles");
 			return;
 		}
+		// The kit places characters from template-space tiles (it maps them
+		// onto the loaded scene itself), so re-base in template space: inside
+		// an instance the player's placed tile would otherwise never match.
+		int[] template = readPlayerTemplateTile();
+		if (template == null)
+		{
+			log.warn("Headless capture: no template tile; using authored tiles");
+			return;
+		}
 		CharacterSave[] chars = save.getMasterFolderNode() != null
 			? save.getMasterFolderNode().getCharacterSaves()
 			: null;
@@ -632,9 +641,7 @@ public class HeadlessCapturePlugin extends Plugin
 			return;
 		}
 		WorldPoint anchor = chars[0].getNonInstancedPoint();
-		int dx = pp[0] - anchor.getX() + dxdy[0];
-		int dy = pp[1] - anchor.getY() + dxdy[1];
-		int dz = pp[2] - anchor.getPlane();
+		int[] anchorArr = {anchor.getX(), anchor.getY(), anchor.getPlane()};
 		for (CharacterSave ch : chars)
 		{
 			if (ch.getNonInstancedPoint() == null)
@@ -642,12 +649,13 @@ public class HeadlessCapturePlugin extends Plugin
 				continue;
 			}
 			WorldPoint p = ch.getNonInstancedPoint();
-			WorldPoint moved = new WorldPoint(
-				p.getX() + dx, p.getY() + dy, p.getPlane() + dz);
-			ch.setNonInstancedPoint(moved);
-			log.warn("Headless capture staged {} at {}/{}/{} (player at {}/{}/{})",
-				ch.getName(), moved.getX(), moved.getY(), moved.getPlane(),
-				pp[0], pp[1], pp[2]);
+			int[] moved = SceneResolver.stageTile(
+				new int[]{p.getX(), p.getY(), p.getPlane()},
+				anchorArr, template, dxdy[0], dxdy[1], 0);
+			ch.setNonInstancedPoint(new WorldPoint(moved[0], moved[1], moved[2]));
+			log.warn("Headless capture staged {} at {}/{}/{} (player template at {}/{}/{})",
+				ch.getName(), moved[0], moved[1], moved[2],
+				template[0], template[1], template[2]);
 		}
 		log.warn("Headless capture staged {} characters near {}/{}/{}",
 			chars.length, pp[0], pp[1], pp[2]);
@@ -733,6 +741,40 @@ public class HeadlessCapturePlugin extends Plugin
 		return ref.get();
 	}
 
+	/**
+	 * The player's tile in template space (what the kit's own placement
+	 * expects): inside an instance this is the template tile, in the main
+	 * world it is the plain tile.
+	 */
+	private int[] readPlayerTemplateTile() throws Exception
+	{
+		AtomicReference<int[]> ref = new AtomicReference<>();
+		CountDownLatch latch = new CountDownLatch(1);
+		clientThread.invokeLater(() ->
+		{
+			try
+			{
+				if (client.getLocalPlayer() != null)
+				{
+					WorldPoint template = WorldPoint.fromLocalInstance(client,
+						client.getLocalPlayer().getLocalLocation(),
+						client.getLocalPlayer().getWorldLocation().getPlane());
+					if (template != null)
+					{
+						ref.set(new int[]{
+							template.getX(), template.getY(), template.getPlane()});
+					}
+				}
+			}
+			finally
+			{
+				latch.countDown();
+			}
+		});
+		latch.await(30, TimeUnit.SECONDS);
+		return ref.get();
+	}
+
 	/** Clears the current setup so a (re)loaded scene starts clean. */
 	private void resetScene() throws Exception
 	{
@@ -796,11 +838,15 @@ public class HeadlessCapturePlugin extends Plugin
 				{
 					boolean hasObject = ch.getCkObject() != null;
 					boolean hasModel = hasObject && ch.getCkObject().getModel() != null;
+					boolean hasObject = ch.getCkObject() != null;
+					boolean hasModel = hasObject && ch.getCkObject().getModel() != null;
 					boolean active = hasObject && ch.getCkObject().isActive();
 					ref.get().add(ch.getName()
 						+ " object=" + hasObject
 						+ " model=" + hasModel
-						+ " active=" + active);
+						+ " active=" + active
+						+ " inScene=" + ch.isInScene()
+						+ " tile=" + ch.getNonInstancedPoint());
 				}
 			}
 			catch (Exception e)
