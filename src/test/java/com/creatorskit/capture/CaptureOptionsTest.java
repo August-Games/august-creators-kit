@@ -144,4 +144,50 @@ public class CaptureOptionsTest
 		assertEquals(30.0, o.fps, 1e-9);
 		assertFalse(o.cropViewport);
 	}
+
+	@Test
+	public void fractionalRangesKeepFinalFrame()
+	{
+		double[] two = CaptureOptions.frameTimesForRange(0.0, 0.04, 30.0);
+		assertEquals(2, two.length);
+		assertEquals(0.0, two[0], 1e-9);
+		assertEquals(1.0 / 30.0, two[1], 1e-9);
+		assertEquals(1, CaptureOptions.frameTimesForRange(0.0, 0.01, 30.0).length);
+		assertEquals(150, CaptureOptions.frameTimesForRange(0.0, 5.0, 30.0).length);
+		assertEquals(0, CaptureOptions.frameTimesForRange(2.0, 2.0, 30.0).length);
+	}
+
+	@Test
+	public void framingOptionsArePerJob()
+	{
+		CaptureOptions o = CaptureOptions.fromProperties(props(
+			"ck.capture.scene", "s.json",
+			"ck.capture.out", "/tmp/o",
+			"ck.capture.stageOnPlayer", "false",
+			"ck.capture.stageOffset", "1,0",
+			"ck.capture.aimCamera", "false",
+			"ck.capture.pitch", "300",
+			"ck.capture.zoom", "64.0",
+			"ck.capture.canvas", "1540x900"));
+		assertFalse(o.stageOnPlayer);
+		assertEquals("1,0", o.stageOffset);
+		assertFalse(o.aimCamera);
+		assertEquals(300, o.pitch);
+		assertEquals(64, o.zoom);
+		assertEquals("1540x900", o.canvas);
+	}
+
+	@Test
+	public void framingDefaultsHold()
+	{
+		CaptureOptions o = CaptureOptions.fromProperties(props(
+			"ck.capture.scene", "s.json",
+			"ck.capture.out", "/tmp/o"));
+		assertTrue(o.stageOnPlayer);
+		assertEquals("2,0", o.stageOffset);
+		assertTrue(o.aimCamera);
+		assertEquals(335, o.pitch);
+		assertEquals(-1, o.zoom);
+		assertEquals(null, o.canvas);
+	}
 }

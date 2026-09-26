@@ -40,6 +40,12 @@ public class CaptureOptions
 	public final boolean cropViewport;
 	public final long settleMs;
 	public final long drawTimeoutSec;
+	public final boolean stageOnPlayer;
+	public final String stageOffset;
+	public final boolean aimCamera;
+	public final int pitch;
+	public final int zoom;
+	public final String canvas;
 
 	private CaptureOptions(
 		Mode mode,
@@ -52,7 +58,13 @@ public class CaptureOptions
 		String requestDir,
 		boolean cropViewport,
 		long settleMs,
-		long drawTimeoutSec)
+		long drawTimeoutSec,
+		boolean stageOnPlayer,
+		String stageOffset,
+		boolean aimCamera,
+		int pitch,
+		int zoom,
+		String canvas)
 	{
 		this.mode = mode;
 		this.scene = scene;
@@ -65,6 +77,12 @@ public class CaptureOptions
 		this.cropViewport = cropViewport;
 		this.settleMs = settleMs;
 		this.drawTimeoutSec = drawTimeoutSec;
+		this.stageOnPlayer = stageOnPlayer;
+		this.stageOffset = stageOffset;
+		this.aimCamera = aimCamera;
+		this.pitch = pitch;
+		this.zoom = zoom;
+		this.canvas = canvas;
 	}
 
 	/** Reads options from the live system properties. */
@@ -88,10 +106,17 @@ public class CaptureOptions
 		boolean cropViewport = Boolean.parseBoolean(get(props, "ck.capture.cropViewport", "false"));
 		long settleMs = (long) parseDouble(get(props, "ck.capture.settleMs", null), DEFAULT_SETTLE_MS, "ck.capture.settleMs");
 		long drawTimeoutSec = (long) parseDouble(get(props, "ck.capture.drawTimeoutSec", null), DEFAULT_DRAW_TIMEOUT_SEC, "ck.capture.drawTimeoutSec");
+		boolean stageOnPlayer = Boolean.parseBoolean(get(props, "ck.capture.stageOnPlayer", "true"));
+		String stageOffset = get(props, "ck.capture.stageOffset", "2,0");
+		boolean aimCamera = Boolean.parseBoolean(get(props, "ck.capture.aimCamera", "true"));
+		int pitch = parseInt(get(props, "ck.capture.pitch", null), 335, "ck.capture.pitch");
+		int zoom = parseInt(get(props, "ck.capture.zoom", null), -1, "ck.capture.zoom");
+		String canvas = emptyToNull(get(props, "ck.capture.canvas", null));
 
 		CaptureOptions options = new CaptureOptions(mode, scene, out, fps,
 			startSec, endSec, stillTimes, requestDir, cropViewport,
-			settleMs, drawTimeoutSec);
+			settleMs, drawTimeoutSec, stageOnPlayer, stageOffset,
+			aimCamera, pitch, zoom, canvas);
 		// Bare properties (nothing pointing at a scene or request dir, mode
 		// untouched) mean interactive use: stay idle instead of erroring.
 		options.validate(scene != null || requestDir != null || modeExplicit);
@@ -171,8 +196,10 @@ public class CaptureOptions
 	}
 
 	/**
-	 * Frame times in scene seconds for a batch range. The end is exclusive:
-	 * a 5 s range at 30 fps yields 150 frames.
+	 * Frame times in scene seconds for a batch range: every
+	 * {@code start + i/fps} strictly below the exclusive end. A 5 s range
+	 * at 30 fps yields 150 frames; fractional ranges keep their final
+	 * eligible frame.
 	 */
 	public static double[] frameTimesForRange(double startSec, double endSec, double fps)
 	{
@@ -184,7 +211,11 @@ public class CaptureOptions
 		{
 			throw new IllegalArgumentException("endSec must be >= startSec");
 		}
-		int n = (int) Math.round((endSec - startSec) * fps);
+		int n = 0;
+		while (startSec + n / fps < endSec - 1e-9)
+		{
+			n++;
+		}
 		double[] times = new double[n];
 		for (int i = 0; i < n; i++)
 		{
@@ -258,6 +289,23 @@ public class CaptureOptions
 		try
 		{
 			return Double.parseDouble(raw.trim());
+		}
+		catch (NumberFormatException e)
+		{
+			throw new IllegalArgumentException(key + " must be a number", e);
+		}
+	}
+
+	/** Int parsing tolerant of whole doubles (Gson renders 64 as "64.0"). */
+	private static int parseInt(String raw, int def, String key)
+	{
+		if (raw == null || raw.trim().isEmpty())
+		{
+			return def;
+		}
+		try
+		{
+			return (int) Double.parseDouble(raw.trim());
 		}
 		catch (NumberFormatException e)
 		{

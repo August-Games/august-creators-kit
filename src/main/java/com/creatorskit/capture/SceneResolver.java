@@ -4,6 +4,13 @@ import com.creatorskit.models.CustomModelComp;
 import com.creatorskit.models.CustomModelType;
 import com.creatorskit.saves.CharacterSave;
 import com.creatorskit.saves.SetupSave;
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -127,7 +134,8 @@ public final class SceneResolver
 
 	/**
 	 * Whether a comp still blocks playback: an explicit request is present,
-	 * or a player/NPC comp that needs one still has no geometry.
+	 * or a player/NPC comp still has no geometry (null or empty stats).
+	 * Applies to every comp, requested or not.
 	 */
 	public static boolean blocksPlayback(CustomModelComp comp)
 	{
@@ -139,13 +147,70 @@ public final class SceneResolver
 		{
 			return true;
 		}
-		if (comp.getModelStats() == null
-			&& (comp.getType() == CustomModelType.CACHE_PLAYER
-			|| comp.getType() == CustomModelType.CACHE_NPC))
+		if (comp.getType() == CustomModelType.CACHE_PLAYER
+			|| comp.getType() == CustomModelType.CACHE_NPC)
 		{
-			return true;
+			return comp.getModelStats() == null || comp.getModelStats().length == 0;
 		}
 		return false;
+	}
+
+	/**
+	 * Requested equipment slots that can never resolve: unknown slot names.
+	 * {@code ring}/{@code ammo} have no visual entry and stay no-ops; ids
+	 * of zero or less keep their current skip behaviour and are not listed.
+	 */
+	public static List<String> badEquipmentSlots(Map<String, Integer> slots)
+	{
+		List<String> bad = new ArrayList<>();
+		if (slots == null)
+		{
+			return bad;
+		}
+		for (String name : slots.keySet())
+		{
+			if (name == null)
+			{
+				bad.add(null);
+				continue;
+			}
+			String lower = name.trim().toLowerCase();
+			if (lower.equals("ring") || lower.equals("ammo"))
+			{
+				continue;
+			}
+			if (slotToKitIndex(name) == null)
+			{
+				bad.add(name);
+			}
+		}
+		return bad;
+	}
+
+	/**
+	 * Requested positive item ids absent from the known item database.
+	 * Pure so it stays unit-testable; the caller supplies the ids.
+	 */
+	public static List<Integer> unknownItemIds(
+		Map<String, Integer> slots, java.util.Collection<Integer> knownIds)
+	{
+		List<Integer> unknown = new ArrayList<>();
+		if (slots == null)
+		{
+			return unknown;
+		}
+		for (Integer id : slots.values())
+		{
+			if (id == null || id <= 0)
+			{
+				continue;
+			}
+			if (knownIds == null || !knownIds.contains(id))
+			{
+				unknown.add(id);
+			}
+		}
+		return unknown;
 	}
 
 	/**
@@ -193,23 +258,61 @@ public final class SceneResolver
 	}
 
 	/**
+	 * Every character in a setup, descending into nested folders. Native
+	 * saves keep characters beneath folder nodes, so root-only scans miss
+	 * nested actors for both duration and staging.
+	 */
+	public static List<CharacterSave> allCharacterSaves(SetupSave save)
+	{
+		List<CharacterSave> out = new ArrayList<>();
+		if (save == null)
+		{
+			return out;
+		}
+		collectCharacters(save.getMasterFolderNode(), out);
+		return out;
+	}
+
+	private static void collectCharacters(
+		com.creatorskit.saves.FolderNodeSave node, List<CharacterSave> out)
+	{
+		if (node == null)
+		{
+			return;
+		}
+		if (node.getCharacterSaves() != null)
+		{
+			for (CharacterSave ch : node.getCharacterSaves())
+			{
+				if (ch != null)
+				{
+					out.add(ch);
+				}
+			}
+		}
+		if (node.getFolderSaves() != null)
+		{
+			for (com.creatorskit.saves.FolderNodeSave child : node.getFolderSaves())
+			{
+				collectCharacters(child, out);
+			}
+		}
+	}
+
+	/**
 	 * Scans every keyframe track of a setup for the maximum tick, for
-	 * deriving a batch end time when none is configured.
+	 * deriving a batch end time when none is configured. Covers nested
+	 * folders and camera tracks.
 	 */
 	public static double maxTick(SetupSave save)
 	{
 		double max = 0.0;
-		if (save == null || save.getMasterFolderNode() == null
-			|| save.getMasterFolderNode().getCharacterSaves() == null)
+		if (save == null)
 		{
 			return max;
 		}
-		for (CharacterSave ch : save.getMasterFolderNode().getCharacterSaves())
+		for (CharacterSave ch : allCharacterSaves(save))
 		{
-			if (ch == null)
-			{
-				continue;
-			}
 			max = Math.max(max, maxTickOf(ch.getAnimationKeyFrames()));
 			max = Math.max(max, maxTickOf(ch.getMovementKeyFrames()));
 			max = Math.max(max, maxTickOf(ch.getSpawnKeyFrames()));
@@ -233,7 +336,119 @@ public final class SceneResolver
 				}
 			}
 		}
+		if (save.getCameraScriptSaves() != null)
+		{
+			for (com.creatorskit.saves.CameraScriptSave cam : save.getCameraScriptSaves())
+			{
+				if (cam != null && Double.isFinite(cam.getTick()))
+				{
+					max = Math.max(max, cam.getTick());
+				}
+			}
+		}
 		return max;
+	}
+
+	/**
+	 * Removes one job's owned outputs so a rerun or a refused job never
+	 * inherits stale frames or terminal markers. Best effort per file.
+	 */
+	public static void clearOwnedOutputs(File dir)
+	{
+		if (dir == null || !dir.isDirectory())
+		{
+			return;
+		}
+		File[] files = dir.listFiles();
+		if (files == null)
+		{
+			return;
+		}
+		for (File f : files)
+		{
+			String n = f.getName();
+			if (f.isFile() && (n.startsWith("frame_") && n.endsWith(".png")
+				|| n.equals("capture.json") || n.equals("resolved_scene.json")
+				|| n.equals("DONE") || n.equals("ERROR")
+				|| n.endsWith(".done") || n.endsWith(".error")
+				|| n.endsWith(".tmp")))
+			{
+				try
+				{
+					Files.deleteIfExists(f.toPath());
+				}
+				catch (Exception ignored)
+				{
+				}
+			}
+		}
+	}
+
+	/**
+	 * Atomically claims a daemon request: moves it into the processing
+	 * directory first, so a request is never executed twice and a
+	 * replacement dropped mid-capture is not archived unexecuted.
+	 *
+	 * @return the claimed file inside the processing directory
+	 */
+	public static File claimRequest(File req, File processingDir) throws Exception
+	{
+		processingDir.mkdirs();
+		File claimed = new File(processingDir, req.getName());
+		try
+		{
+			Files.move(req.toPath(), claimed.toPath(),
+				StandardCopyOption.ATOMIC_MOVE,
+				StandardCopyOption.REPLACE_EXISTING);
+		}
+		catch (Exception atomicFailed)
+		{
+			Files.move(req.toPath(), claimed.toPath(),
+				StandardCopyOption.REPLACE_EXISTING);
+		}
+		return claimed;
+	}
+
+	/** Writes bytes atomically (temp + move) so readers never see halves. */
+	public static void atomicWrite(File target, byte[] bytes) throws Exception
+	{
+		File tmp = new File(target.getParentFile(), target.getName() + ".tmp");
+		Files.write(tmp.toPath(), bytes);
+		try
+		{
+			Files.move(tmp.toPath(), target.toPath(),
+				StandardCopyOption.ATOMIC_MOVE,
+				StandardCopyOption.REPLACE_EXISTING);
+		}
+		catch (Exception atomicFailed)
+		{
+			Files.move(tmp.toPath(), target.toPath(),
+				StandardCopyOption.REPLACE_EXISTING);
+		}
+	}
+
+	/**
+	 * Terminal error result for jobs that never reach the normal writer
+	 * (bad requests, validation failures): a Gson-built
+	 * {@code capture.json} plus the {@code ERROR} marker, both atomic.
+	 */
+	public static void writeErrorResult(
+		Gson gson, File outDir, String scene, String mode,
+		double fps, boolean cropViewport, String reason) throws Exception
+	{
+		outDir.mkdirs();
+		JsonObject root = new JsonObject();
+		root.addProperty("status", "error");
+		root.addProperty("mode", mode);
+		root.addProperty("scene", scene == null ? "" : scene);
+		root.addProperty("fps", fps);
+		root.addProperty("crop_viewport", cropViewport);
+		root.addProperty("error", reason == null ? "" : reason);
+		root.add("frames", new JsonArray());
+		atomicWrite(new File(outDir, "capture.json"),
+			gson.toJson(root).getBytes(StandardCharsets.UTF_8));
+		atomicWrite(new File(outDir, "ERROR"),
+			((reason == null ? "" : reason) + "\n").getBytes(StandardCharsets.UTF_8));
 	}
 
 	private static double maxTickOf(Object[] frames)

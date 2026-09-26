@@ -364,6 +364,25 @@ public class DataFinder
         }
     }
 
+    /**
+     * Whether an item id exists in the loaded item database. Used to verify
+     * every requested resolve item actually resolved instead of being
+     * silently skipped. Reads a snapshot so a concurrent reload cannot fail
+     * the scan partway.
+     */
+    public boolean hasItemId(int itemId)
+    {
+        ItemDefinition[] snapshot = itemData.toArray(new ItemDefinition[0]);
+        for (ItemDefinition def : snapshot)
+        {
+            if (def != null && def.getId() == itemId)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public void getPlayerItems(ArrayList<ModelStats> modelStats, boolean groundItem, boolean maleItem, int[] itemId, AnimSequence animSequence)
     {
         AnimSequenceData mainHand = animSequence.getMainHandData();

@@ -109,9 +109,18 @@ Use `"times": [0.0, 2.5]` instead of `start`/`end` for stills. Processed
 requests move to `handled/`. Each request resolves, reloads, and captures
 in the same JVM. Drop a file named `stop` in the directory to end the loop.
 
-Per-request framing keys (`stageOffset`, `aimCamera`, `pitch`, `zoom`)
-override the matching `ck.capture.*` properties for that job only, so one
-daemon can shoot different framings without a restart.
+Per-request framing keys (`stageOnPlayer`, `stageOffset`, `aimCamera`,
+`pitch`, `zoom`, `canvas`) override the matching `ck.capture.*` startup
+properties for that job only: each job's options are immutable, so one
+daemon can shoot different framings without a restart and jobs never leak
+settings into each other.
+
+The daemon claims each request by atomically moving it to `processing/`
+before reading it, so a request runs exactly once. Every job starts with
+a cleared output directory (no stale frames or markers), and every
+failure — including malformed requests — leaves a terminal error behind:
+`ERROR` + `capture.json` in the job output dir, or `<name>.error` beside
+the request when no output path is known.
 
 ## Known limitations
 

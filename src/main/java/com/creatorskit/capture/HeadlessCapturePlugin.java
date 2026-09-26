@@ -90,6 +90,11 @@ public class HeadlessCapturePlugin extends Plugin
 			return;
 		}
 		log.warn("Headless capture starting in {} mode", options.mode);
+		if (worker != null && worker.isAlive())
+		{
+			log.warn("Headless capture worker still running; not starting another");
+			return;
+		}
 		worker = new Thread(() -> runCapture(options), "headless-capture");
 		worker.setDaemon(true);
 		worker.start();
@@ -98,6 +103,22 @@ public class HeadlessCapturePlugin extends Plugin
 	@Override
 	protected void shutDown()
 	{
+		Thread w = worker;
+		worker = null;
+		if (w != null && w.isAlive())
+		{
+			w.interrupt();
+			try
+			{
+				// Bounded: never block the EDT indefinitely on a worker
+				// that may itself be awaiting the EDT.
+				w.join(3000);
+			}
+			catch (InterruptedException e)
+			{
+				Thread.currentThread().interrupt();
+			}
+		}
 	}
 
 	@Subscribe
@@ -118,8 +139,19 @@ public class HeadlessCapturePlugin extends Plugin
 			int code = runJob(options.scene, options.out, options, null);
 			System.exit(code);
 		}
+		catch (InterruptedException e)
+		{
+			Thread.currentThread().interrupt();
+			log.warn("Headless capture worker interrupted; stopping quietly");
+		}
 		catch (Exception e)
 		{
+			if (worker == null || Thread.currentThread().isInterrupted())
+			{
+				Thread.currentThread().interrupt();
+				log.warn("Headless capture stopped during shutdown; not exiting");
+				return;
+			}
 			log.error("Headless capture failed", e);
 			System.exit(1);
 		}
@@ -156,18 +188,59 @@ public class HeadlessCapturePlugin extends Plugin
 	private void handleDaemonRequest(File req, File handled, CaptureOptions daemon)
 	{
 		String base = req.getName().replaceFirst("\\.request\\.json$", "");
+		File dir = req.getParentFile();
+		File processing = new File(dir, "processing");
+		File claimed;
 		try
 		{
-			String json = new String(Files.readAllBytes(req.toPath()), StandardCharsets.UTF_8);
+			claimed = SceneResolver.claimRequest(req, processing);
+		}
+		catch (Exception e)
+		{
+			log.warn("Headless capture could not claim {}; skipping", req.getName());
+			return;
+		}
+		String outPath = null;
+		try
+		{
+			String json = new String(Files.readAllBytes(claimed.toPath()), StandardCharsets.UTF_8);
 			@SuppressWarnings("unchecked")
 			Map<String, Object> map = creators.getGson().fromJson(json, Map.class);
+			if (map == null)
+			{
+				throw new IllegalArgumentException("request is not a JSON object");
+			}
+			Object outRaw = map.get("out");
+			outPath = outRaw == null ? null : outRaw.toString();
+			// Seed from the daemon's startup properties so JVM -D flags act
+			// as defaults; request keys override per job. Nothing here
+			// mutates JVM state, so jobs cannot leak framing into each other.
 			Properties props = new Properties();
+			for (String key : new String[]{
+				"ck.capture.fps", "ck.capture.start", "ck.capture.end",
+				"ck.capture.settleMs", "ck.capture.cropViewport",
+				"ck.capture.stageOnPlayer", "ck.capture.stageOffset",
+				"ck.capture.aimCamera", "ck.capture.pitch",
+				"ck.capture.zoom", "ck.capture.canvas"})
+			{
+				String sys = System.getProperty(key);
+				if (sys != null)
+				{
+					props.setProperty(key, sys);
+				}
+			}
 			putIfPresent(props, "ck.capture.scene", map.get("scene"));
 			putIfPresent(props, "ck.capture.out", map.get("out"));
 			putIfPresent(props, "ck.capture.fps", map.get("fps"));
 			putIfPresent(props, "ck.capture.start", map.get("start"));
 			putIfPresent(props, "ck.capture.end", map.get("end"));
 			putIfPresent(props, "ck.capture.settleMs", map.get("settleMs"));
+			putIfPresent(props, "ck.capture.stageOnPlayer", map.get("stageOnPlayer"));
+			putIfPresent(props, "ck.capture.stageOffset", map.get("stageOffset"));
+			putIfPresent(props, "ck.capture.aimCamera", map.get("aimCamera"));
+			putIfPresent(props, "ck.capture.pitch", map.get("pitch"));
+			putIfPresent(props, "ck.capture.zoom", map.get("zoom"));
+			putIfPresent(props, "ck.capture.canvas", map.get("canvas"));
 			if (map.get("times") instanceof List)
 			{
 				StringBuilder sb = new StringBuilder();
@@ -189,13 +262,6 @@ public class HeadlessCapturePlugin extends Plugin
 			Object crop = map.get("cropViewport");
 			props.setProperty("ck.capture.cropViewport",
 				crop == null ? Boolean.toString(daemon.cropViewport) : crop.toString());
-			// Per-request capture tuning (applied as live system properties
-			// so each daemon job can frame differently without restarting).
-			setLiveIfPresent("ck.capture.stageOffset", map.get("stageOffset"));
-			setLiveIfPresent("ck.capture.aimCamera", map.get("aimCamera"));
-			setLiveIfPresent("ck.capture.pitch", map.get("pitch"));
-			setLiveIfPresent("ck.capture.zoom", map.get("zoom"));
-			setLiveIfPresent("ck.capture.canvas", map.get("canvas"));
 			CaptureOptions job = CaptureOptions.fromProperties(props);
 			int code = runJob(job.scene, job.out, job, null);
 			writeSentinel(new File(job.out), base, code == 0, code == 0 ? "ok" : "job failed");
@@ -204,41 +270,59 @@ public class HeadlessCapturePlugin extends Plugin
 		}
 		catch (Exception e)
 		{
+			if (e instanceof InterruptedException || Thread.currentThread().isInterrupted())
+			{
+				Thread.currentThread().interrupt();
+				log.warn("Headless capture daemon interrupted; stopping");
+				return;
+			}
 			log.error("Headless capture daemon request {} failed", req.getName(), e);
+			writeDaemonError(dir, base, outPath, e.toString());
 		}
 		finally
 		{
 			try
 			{
-				Files.move(req.toPath(), new File(handled, req.getName()).toPath(),
+				Files.move(claimed.toPath(), new File(handled, claimed.getName()).toPath(),
 					java.nio.file.StandardCopyOption.REPLACE_EXISTING);
 			}
 			catch (Exception e)
 			{
-				log.error("Headless capture could not archive {}", req.getName(), e);
+				log.error("Headless capture could not archive {}", claimed.getName(), e);
 			}
 		}
 	}
 
-	/** System property as int, tolerant of Gson's 64.0-style doubles. */
-	private static int sysInt(String key, int def)
+	/**
+	 * Terminal error for a daemon request that never reached the normal
+	 * writer: into the job output dir when one is known, otherwise a
+	 * {@code <name>.error} file beside the request. Never throws.
+	 */
+	private void writeDaemonError(File dir, String base, String outPath, String reason)
 	{
 		try
 		{
-			return (int) Double.parseDouble(System.getProperty(key,
-				Integer.toString(def)));
+			if (outPath != null && !outPath.trim().isEmpty())
+			{
+				File out = new File(outPath);
+				SceneResolver.writeErrorResult(creators.getGson(), out,
+					null, "batch", 30.0, false, reason);
+				writeSentinel(out, base, false, reason);
+				return;
+			}
 		}
-		catch (Exception e)
+		catch (Exception inner)
 		{
-			return def;
+			log.error("Headless capture could not write job error result", inner);
 		}
-	}
-
-	private static void setLiveIfPresent(String key, Object v)
-	{
-		if (v != null)
+		try
 		{
-			System.setProperty(key, v.toString());
+			Files.write(new File(dir, base + ".error").toPath(),
+				(reason + "\n").getBytes(StandardCharsets.UTF_8));
+		}
+		catch (Exception inner)
+		{
+			log.error("Headless capture could not write request error file", inner);
 		}
 	}
 
@@ -286,10 +370,13 @@ public class HeadlessCapturePlugin extends Plugin
 				return fail(outPath, options, "could not parse scene: " + scenePath);
 			}
 
-			if (!resolveComps(save))
+			// Best-effort resolution first; the gate below examines EVERY comp
+			// (requested or not), so geometry-less comps can never slip through.
+			resolveComps(save);
+			List<String> blockers = new ArrayList<>();
+			CustomModelComp[] comps = save.getComps();
+			if (comps != null)
 			{
-				List<String> blockers = new ArrayList<>();
-				CustomModelComp[] comps = save.getComps();
 				for (int i = 0; i < comps.length; i++)
 				{
 					if (SceneResolver.blocksPlayback(comps[i]))
@@ -297,6 +384,9 @@ public class HeadlessCapturePlugin extends Plugin
 						blockers.add(SceneResolver.describeBlocker(i, comps[i]));
 					}
 				}
+			}
+			if (!blockers.isEmpty())
+			{
 				return fail(outPath, options,
 					"refusing scene with unresolved resolve requests: " + blockers);
 			}
@@ -319,17 +409,20 @@ public class HeadlessCapturePlugin extends Plugin
 
 			File out = new File(outPath);
 			out.mkdirs();
+			// Fresh outputs per job: a rerun or refusal must never inherit
+			// stale frames or terminal markers.
+			SceneResolver.clearOwnedOutputs(out);
 			// Stage first: the resolved file must match what actually plays,
 			// or the actors end up at the authored tiles while the camera
 			// follows the capturing player elsewhere.
-			stageOnPlayer(save);
+			int staged = stageOnPlayer(save, options);
 			File resolved = new File(out, "resolved_scene.json");
 			Files.write(resolved.toPath(),
 				creators.getGson().toJson(save).getBytes(StandardCharsets.UTF_8));
 
 			resetScene();
 			loadSceneFile(resolved);
-			ensureCanvasSize();
+			ensureCanvasSize(options);
 			cameraAimed = false;
 			parkMouseOffCanvas();
 			quietClientForCapture();
@@ -338,6 +431,13 @@ public class HeadlessCapturePlugin extends Plugin
 			log.warn("Headless capture spawned {} characters: {}",
 				spawned.size(), spawned);
 			reportSpawnHealth();
+			// A load that silently creates nothing must fail loudly, not
+			// write a successful empty capture.
+			if (staged > 0 && spawned.size() < staged)
+			{
+				return fail(outPath, options, "scene loaded " + spawned.size()
+					+ " of " + staged + " staged characters");
+			}
 
 			List<FrameMeta> frames = captureAll(save, times, out, options);
 			if (frames == null)
@@ -452,16 +552,16 @@ public class HeadlessCapturePlugin extends Plugin
 
 	/**
 	 * Resolves every comp carrying a resolve request against the live cache.
-	 * Returns false when any comp remains unresolved; the caller must then
-	 * refuse the scene.
+	 * Resolution is best effort; the caller gates on every comp afterwards,
+	 * so anything still unresolved refuses the scene.
 	 */
-	private boolean resolveComps(SetupSave save) throws Exception
+	private void resolveComps(SetupSave save) throws Exception
 	{
 		CustomModelComp[] comps = save.getComps();
 		List<Integer> pending = SceneResolver.unresolvedIndices(comps);
 		if (pending.isEmpty())
 		{
-			return true;
+			return;
 		}
 		log.warn("Headless capture resolving {} comps", pending.size());
 
@@ -497,10 +597,10 @@ public class HeadlessCapturePlugin extends Plugin
 		{
 			if (SceneResolver.blocksPlayback(comps[i]))
 			{
-				return false;
+				log.error("Headless capture comp {} still blocked: {}", i,
+					SceneResolver.describeBlocker(i, comps[i]));
 			}
 		}
-		return true;
 	}
 
 	private boolean resolvePlayer(CustomModelComp comp, int[] base, int[] colours) throws Exception
@@ -509,10 +609,18 @@ public class HeadlessCapturePlugin extends Plugin
 		{
 			return false;
 		}
+		Map<String, Integer> slots = comp.getEquipmentSlots();
+		List<String> badSlots = SceneResolver.badEquipmentSlots(slots);
+		if (!badSlots.isEmpty())
+		{
+			log.error("Headless capture player comp requests unknown slots: {}", badSlots);
+			return false;
+		}
 		int[] equipment = SceneResolver.buildEquipmentArray(
-			base, comp.getEquipmentSlots(), PlayerComposition.ITEM_OFFSET);
+			base, slots, PlayerComposition.ITEM_OFFSET);
 		boolean maleItem = !Boolean.TRUE.equals(comp.getFemale());
 		AtomicReference<ModelStats[]> ref = new AtomicReference<>();
+		AtomicReference<List<Integer>> unknownRef = new AtomicReference<>(new ArrayList<>());
 		CountDownLatch latch = new CountDownLatch(1);
 		clientThread.invokeLater(() ->
 		{
@@ -520,6 +628,21 @@ public class HeadlessCapturePlugin extends Plugin
 			{
 				ref.set(creators.getDataFinder().findModelsForPlayer(
 					false, maleItem, equipment, -1, -1, -1, new int[0]));
+				// Per-item tracking: every requested positive id must exist
+				// in the item database, or the request stays unresolved.
+				if (slots != null)
+				{
+					List<Integer> unknown = new ArrayList<>();
+					for (Integer id : slots.values())
+					{
+						if (id != null && id > 0
+							&& !creators.getDataFinder().hasItemId(id))
+						{
+							unknown.add(id);
+						}
+					}
+					unknownRef.set(unknown);
+				}
 			}
 			finally
 			{
@@ -528,6 +651,12 @@ public class HeadlessCapturePlugin extends Plugin
 		});
 		if (!latch.await(120, TimeUnit.SECONDS))
 		{
+			return false;
+		}
+		if (!unknownRef.get().isEmpty())
+		{
+			log.error("Headless capture player comp requests unknown item ids: {}",
+				unknownRef.get());
 			return false;
 		}
 		ModelStats[] stats = ref.get();
@@ -646,34 +775,44 @@ public class HeadlessCapturePlugin extends Plugin
 	 * this the actors can end up wherever the authoring area was instead of
 	 * where the capturing player stands.
 	 */
-	private void stageOnPlayer(SetupSave save) throws Exception
+	/**
+	 * Re-bases every character in the setup (including nested folders)
+	 * around the settled player tile. Returns the number staged.
+	 */
+	private int stageOnPlayer(SetupSave save, CaptureOptions options) throws Exception
 	{
-		if (!Boolean.parseBoolean(System.getProperty("ck.capture.stageOnPlayer", "true")))
+		if (!options.stageOnPlayer)
 		{
-			return;
+			return 0;
 		}
-		int[] dxdy = parseOffset(System.getProperty("ck.capture.stageOffset", "2,0"));
+		int[] dxdy = parseOffset(options.stageOffset);
 		int[] pp = readStablePlayerTile();
 		if (pp == null)
 		{
 			log.warn("Headless capture: no local player for staging; using authored tiles");
-			return;
+			return 0;
 		}
-		// NonInstancedPoint is consumed literally: the kit maps template to
-		// instance itself, and template-based points provably do not draw
-		// in-instance (cap_probe: text anchors render, models do not). Stage
-		// at the player's actual tile so objects land in the loaded scene in
-		// both the main world and instances.
+		// NonInstancedPoint is consumed literally, and template-based points
+		// provably do not draw in-instance. Stage at the player's actual
+		// tile so objects land in the loaded scene in both the main world
+		// and instances.
 		int[] base = pp;
-		CharacterSave[] chars = save.getMasterFolderNode() != null
-			? save.getMasterFolderNode().getCharacterSaves()
-			: null;
-		if (chars == null || chars.length == 0 || chars[0].getNonInstancedPoint() == null)
+		List<CharacterSave> chars = SceneResolver.allCharacterSaves(save);
+		WorldPoint anchor = null;
+		for (CharacterSave ch : chars)
 		{
-			return;
+			if (ch.getNonInstancedPoint() != null)
+			{
+				anchor = ch.getNonInstancedPoint();
+				break;
+			}
 		}
-		WorldPoint anchor = chars[0].getNonInstancedPoint();
+		if (anchor == null)
+		{
+			return 0;
+		}
 		int[] anchorArr = {anchor.getX(), anchor.getY(), anchor.getPlane()};
+		int staged = 0;
 		for (CharacterSave ch : chars)
 		{
 			if (ch.getNonInstancedPoint() == null)
@@ -685,12 +824,14 @@ public class HeadlessCapturePlugin extends Plugin
 				new int[]{p.getX(), p.getY(), p.getPlane()},
 				anchorArr, base, dxdy[0], dxdy[1], 0);
 			ch.setNonInstancedPoint(new WorldPoint(moved[0], moved[1], moved[2]));
+			staged++;
 			log.warn("Headless capture staged {} at {}/{}/{} (player at {}/{}/{})",
 				ch.getName(), moved[0], moved[1], moved[2],
 				base[0], base[1], base[2]);
 		}
 		log.warn("Headless capture staged {} characters near {}/{}/{}",
-			chars.length, pp[0], pp[1], pp[2]);
+			staged, pp[0], pp[1], pp[2]);
+		return staged;
 	}
 
 	private static int[] parseOffset(String raw)
@@ -1004,13 +1145,13 @@ public class HeadlessCapturePlugin extends Plugin
 	 * stay centred, the capturing player drops out of frame), yaw facing
 	 * them, configured pitch/zoom. Disabled with ck.capture.aimCamera=false.
 	 */
-	private void aimCameraAtActors() throws Exception
+	private void aimCameraAtActors(CaptureOptions options) throws Exception
 	{
-		if (!Boolean.parseBoolean(System.getProperty("ck.capture.aimCamera", "true")))
+		if (!options.aimCamera)
 		{
 			return;
 		}
-		int pitch = sysInt("ck.capture.pitch", 335);
+		int pitch = options.pitch;
 		CountDownLatch latch = new CountDownLatch(1);
 		clientThread.invokeLater(() ->
 		{
@@ -1047,11 +1188,14 @@ public class HeadlessCapturePlugin extends Plugin
 				int yaw = (int) (Math.atan2(dx, dy) * 325.94932345220167) & 0x7FF;
 				client.setCameraYawTarget(yaw);
 				client.setCameraPitchTarget(pitch);
-				int zoom = sysInt("ck.capture.zoom", -1);
+				int zoom = options.zoom;
 				if (zoom > 0)
 				{
 					client.runScript(ScriptID.CAMERA_DO_ZOOM, zoom, zoom);
 				}
+				// Focal setters require free camera mode; without it the
+				// focal point stays locked on the capturing player.
+				client.setCameraMode(1);
 				String focal = "kept";
 				LocalPoint lp = LocalPoint.fromWorld(
 					client.getTopLevelWorldView(),
@@ -1116,9 +1260,9 @@ public class HeadlessCapturePlugin extends Plugin
 	 * Resizes the game canvas (e.g. ck.capture.canvas=1540x900) so the
 	 * captured viewport reaches the requested size 1:1. Best effort.
 	 */
-	private void ensureCanvasSize()
+	private void ensureCanvasSize(CaptureOptions options)
 	{
-		String raw = System.getProperty("ck.capture.canvas", "").trim();
+		String raw = options.canvas == null ? "" : options.canvas.trim();
 		String[] wh = raw.split("x");
 		if (wh.length != 2)
 		{
@@ -1130,20 +1274,26 @@ public class HeadlessCapturePlugin extends Plugin
 			int wantH = Integer.parseInt(wh[1].trim());
 			for (int pass = 0; pass < 2; pass++)
 			{
+				final String[] winInfo = new String[1];
 				SwingUtilities.invokeAndWait(() ->
 				{
 					java.awt.Window win =
 						SwingUtilities.getWindowAncestor(client.getCanvas());
 					if (win == null)
 					{
+						winInfo[0] = "no-ancestor-window";
 						return;
 					}
+					winInfo[0] = win.getClass().getName()
+						+ " frame=" + win.getSize().width + "x" + win.getSize().height;
 					java.awt.Dimension fs = win.getSize();
 					win.setSize(fs.width + (wantW - client.getCanvasWidth()),
 						fs.height + (wantH - client.getCanvasHeight()));
 					win.validate();
 				});
 				Thread.sleep(2000);
+				log.warn("Headless capture canvas resize pass {}: win={} canvas={}x{}",
+					pass, winInfo[0], client.getCanvasWidth(), client.getCanvasHeight());
 				if (client.getCanvasWidth() == wantW
 					&& client.getCanvasHeight() == wantH)
 				{
@@ -1167,19 +1317,53 @@ public class HeadlessCapturePlugin extends Plugin
 	 */
 	private BufferedImage seekAndCapture(double tick, CaptureOptions options) throws Exception
 	{
+		if (client.getGameState() != GameState.LOGGED_IN)
+		{
+			throw new IllegalStateException(
+				"capture requires login; game state is " + client.getGameState());
+		}
 		SwingUtilities.invokeAndWait(() ->
 			creators.getCreatorsPanel().getToolBox().getTimeSheetPanel()
 				.setCurrentTime(tick, false));
 
-		CountDownLatch settled = new CountDownLatch(1);
-		clientThread.invokeLater(settled::countDown);
-		if (!settled.await(30, TimeUnit.SECONDS))
+		// The panel seek above runs on the EDT while rendering reads game
+		// objects on the client thread. Re-apply the simulation where it
+		// belongs and barrier on it: only draws requested after this point
+		// are accepted, so a torn EDT-interleaved draw is never captured.
+		AtomicReference<Exception> simErr = new AtomicReference<>();
+		CountDownLatch simDone = new CountDownLatch(1);
+		clientThread.invokeLater(() ->
+		{
+			try
+			{
+				if (client.getGameState() != GameState.LOGGED_IN)
+				{
+					throw new IllegalStateException(
+						"lost login during capture; game state is " + client.getGameState());
+				}
+				creators.getCreatorsPanel().getToolBox().getProgrammer()
+					.updatePrograms(tick);
+			}
+			catch (Exception e)
+			{
+				simErr.set(e);
+			}
+			finally
+			{
+				simDone.countDown();
+			}
+		});
+		if (!simDone.await(30, TimeUnit.SECONDS))
 		{
 			return null;
 		}
+		if (simErr.get() != null)
+		{
+			throw simErr.get();
+		}
 		if (!cameraAimed)
 		{
-			aimCameraAtActors();
+			aimCameraAtActors(options);
 			convergeCamera();
 			cameraAimed = true;
 		}
@@ -1203,6 +1387,12 @@ public class HeadlessCapturePlugin extends Plugin
 		if (img == null)
 		{
 			return null;
+		}
+		if (client.getGameState() != GameState.LOGGED_IN)
+		{
+			throw new IllegalStateException(
+				"draw completed while not logged in; game state is "
+					+ client.getGameState());
 		}
 		BufferedImage bi = new BufferedImage(
 			img.getWidth(null), img.getHeight(null), BufferedImage.TYPE_INT_RGB);
@@ -1265,51 +1455,44 @@ public class HeadlessCapturePlugin extends Plugin
 		File out, CaptureOptions options, String scenePath,
 		List<FrameMeta> frames, String error) throws Exception
 	{
-		StringBuilder sb = new StringBuilder();
-		sb.append("{\n");
-		field(sb, "status", error == null ? "ok" : "error", true);
-		field(sb, "mode", options.mode.toString().toLowerCase(), true);
-		field(sb, "scene", scenePath, true);
-		sb.append("  \"fps\": ").append(options.fps).append(",\n");
-		sb.append("  \"crop_viewport\": ").append(options.cropViewport).append(",\n");
+		// Built with Gson (never String.format): locale-independent numbers
+		// and properly escaped strings.
+		com.google.gson.JsonObject root = new com.google.gson.JsonObject();
+		root.addProperty("status", error == null ? "ok" : "error");
+		root.addProperty("mode", options.mode.toString().toLowerCase());
+		root.addProperty("scene", scenePath);
+		root.addProperty("fps", options.fps);
+		root.addProperty("crop_viewport", options.cropViewport);
 		if (error != null)
 		{
-			field(sb, "error", error, true);
+			root.addProperty("error", error);
 		}
-		sb.append("  \"frames\": [\n");
-		for (int i = 0; i < frames.size(); i++)
+		com.google.gson.JsonArray arr = new com.google.gson.JsonArray();
+		for (FrameMeta f : frames)
 		{
-			FrameMeta f = frames.get(i);
-			sb.append("    {");
-			sb.append("\"index\": ").append(f.index).append(", ");
-			sb.append("\"scene_time\": ").append(String.format("%.4f", f.sceneTime)).append(", ");
-			sb.append("\"tick\": ").append(String.format("%.4f", f.tick)).append(", ");
-			sb.append("\"canvas_w\": ").append(f.canvasW).append(", ");
-			sb.append("\"canvas_h\": ").append(f.canvasH).append(", ");
-			sb.append("\"viewport_x\": ").append(f.viewportX).append(", ");
-			sb.append("\"viewport_y\": ").append(f.viewportY).append(", ");
-			sb.append("\"viewport_w\": ").append(f.viewportW).append(", ");
-			sb.append("\"viewport_h\": ").append(f.viewportH).append(", ");
-			sb.append("\"game_state\": \"").append(f.gameState).append("\", ");
-			sb.append("\"file\": \"").append(f.file).append("\"}");
-			sb.append(i + 1 < frames.size() ? ",\n" : "\n");
+			com.google.gson.JsonObject o = new com.google.gson.JsonObject();
+			o.addProperty("index", f.index);
+			o.addProperty("scene_time", Math.round(f.sceneTime * 10000.0) / 10000.0);
+			o.addProperty("tick", Math.round(f.tick * 10000.0) / 10000.0);
+			o.addProperty("canvas_w", f.canvasW);
+			o.addProperty("canvas_h", f.canvasH);
+			o.addProperty("viewport_x", f.viewportX);
+			o.addProperty("viewport_y", f.viewportY);
+			o.addProperty("viewport_w", f.viewportW);
+			o.addProperty("viewport_h", f.viewportH);
+			o.addProperty("game_state", f.gameState);
+			o.addProperty("file", f.file);
+			arr.add(o);
 		}
-		sb.append("  ]\n}\n");
-		Files.write(new File(out, "capture.json").toPath(),
-			sb.toString().getBytes(StandardCharsets.UTF_8));
-	}
-
-	private static void field(StringBuilder sb, String key, String value, boolean comma)
-	{
-		sb.append("  \"").append(key).append("\": \"")
-			.append(value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\""))
-			.append("\"").append(comma ? ",\n" : "\n");
+		root.add("frames", arr);
+		SceneResolver.atomicWrite(new File(out, "capture.json"),
+			creators.getGson().toJson(root).getBytes(StandardCharsets.UTF_8));
 	}
 
 	private void writeSentinel(File out, String base, boolean ok, String message) throws Exception
 	{
 		String name = base == null ? (ok ? "DONE" : "ERROR") : (base + (ok ? ".done" : ".error"));
-		Files.write(new File(out, name).toPath(),
+		SceneResolver.atomicWrite(new File(out, name),
 			(message + "\n").getBytes(StandardCharsets.UTF_8));
 	}
 }

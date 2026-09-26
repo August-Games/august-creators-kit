@@ -121,4 +121,151 @@ public class SceneResolverTest
 		// base is not mutated
 		assertEquals(0, base[0]);
 	}
+
+	@Test
+	public void emptyGeometryBlocksPlayerAndNpc()
+	{
+		CustomModelComp player = comp(CustomModelType.CACHE_PLAYER);
+		player.setModelStats(new com.creatorskit.models.ModelStats[0]);
+		assertTrue(SceneResolver.blocksPlayback(player));
+		CustomModelComp npc = comp(CustomModelType.CACHE_NPC);
+		npc.setModelStats(new com.creatorskit.models.ModelStats[0]);
+		assertTrue(SceneResolver.blocksPlayback(npc));
+		// non-player comps without geometry stay playable
+		assertFalse(SceneResolver.blocksPlayback(comp(CustomModelType.CACHE_OBJECT)));
+	}
+
+	@Test
+	public void unknownSlotsAreListed()
+	{
+		Map<String, Integer> slots = new HashMap<>();
+		slots.put("head", 1163);
+		slots.put("wing", 2);
+		slots.put("ring", 1635);
+		slots.put("ammo", 5);
+		assertEquals(java.util.Collections.singletonList("wing"),
+			SceneResolver.badEquipmentSlots(slots));
+		assertTrue(SceneResolver.badEquipmentSlots(null).isEmpty());
+	}
+
+	@Test
+	public void unknownItemIdsAreListed()
+	{
+		Map<String, Integer> slots = new HashMap<>();
+		slots.put("head", 1163);
+		slots.put("main_hand", 999999);
+		slots.put("off_hand", 0);
+		java.util.Set<Integer> known =
+			new java.util.HashSet<>(java.util.Collections.singletonList(1163));
+		assertEquals(java.util.Collections.singletonList(999999),
+			SceneResolver.unknownItemIds(slots, known));
+		// without a database every positive id is unknown
+		assertEquals(2, SceneResolver.unknownItemIds(slots, null).size());
+		assertTrue(SceneResolver.unknownItemIds(null, known).isEmpty());
+	}
+
+	@Test
+	public void nestedFoldersAndCameraCountForDuration()
+	{
+		String json = "{"
+			+ "\"version\":\"t\",\"comps\":[],"
+			+ "\"masterFolderNode\":{\"folderType\":\"MASTER\",\"name\":\"root\","
+			+ "\"characterSaves\":[{\"name\":\"A\"}],"
+			+ "\"folderSaves\":[{\"folderType\":\"STANDARD\",\"name\":\"n\","
+			+ "\"characterSaves\":[{\"name\":\"B\"},{\"name\":\"C\"}],"
+			+ "\"folderSaves\":[]}]},"
+			+ "\"saves\":[],"
+			+ "\"cameraScriptSaves\":[{\"tick\":20.0}]}";
+		com.creatorskit.saves.SetupSave save =
+			new Gson().fromJson(json, com.creatorskit.saves.SetupSave.class);
+		assertEquals(3, SceneResolver.allCharacterSaves(save).size());
+		assertEquals("B", SceneResolver.allCharacterSaves(save).get(1).getName());
+		assertEquals(20.0, SceneResolver.maxTick(save), 1e-9);
+		assertTrue(SceneResolver.allCharacterSaves(null).isEmpty());
+		assertEquals(0.0, SceneResolver.maxTick(null), 1e-9);
+	}
+
+	@Test
+	public void clearOwnedOutputsKeepsForeignFiles() throws Exception
+	{
+		java.io.File dir = new java.io.File(
+			System.getProperty("java.io.tmpdir"),
+			"ck-clear-" + System.nanoTime());
+		assertTrue(dir.mkdirs());
+		try
+		{
+			for (String n : new String[]{"frame_00001.png", "capture.json",
+				"resolved_scene.json", "DONE", "ERROR", "r1.done", "r2.error",
+				"capture.json.tmp", "keep.txt"})
+			{
+				assertTrue(new java.io.File(dir, n).createNewFile());
+			}
+			assertTrue(new java.io.File(dir, "sub").mkdir());
+			SceneResolver.clearOwnedOutputs(dir);
+			assertFalse(new java.io.File(dir, "frame_00001.png").exists());
+			assertFalse(new java.io.File(dir, "capture.json").exists());
+			assertFalse(new java.io.File(dir, "DONE").exists());
+			assertFalse(new java.io.File(dir, "ERROR").exists());
+			assertFalse(new java.io.File(dir, "r1.done").exists());
+			assertFalse(new java.io.File(dir, "capture.json.tmp").exists());
+			assertTrue(new java.io.File(dir, "keep.txt").exists());
+			assertTrue(new java.io.File(dir, "sub").exists());
+		}
+		finally
+		{
+			for (java.io.File f : dir.listFiles())
+			{
+				f.delete();
+			}
+			dir.delete();
+		}
+	}
+
+	@Test
+	public void claimRequestMovesAtomically() throws Exception
+	{
+		java.io.File dir = new java.io.File(
+			System.getProperty("java.io.tmpdir"),
+			"ck-claim-" + System.nanoTime());
+		java.io.File processing = new java.io.File(dir, "processing");
+		assertTrue(dir.mkdirs());
+		java.io.File req = new java.io.File(dir, "r1.request.json");
+		java.nio.file.Files.write(req.toPath(), "{}".getBytes("UTF-8"));
+		java.io.File claimed = SceneResolver.claimRequest(req, processing);
+		assertFalse(req.exists());
+		assertTrue(claimed.exists());
+		assertEquals("r1.request.json", claimed.getName());
+		boolean secondFailed = false;
+		try
+		{
+			SceneResolver.claimRequest(req, processing);
+		}
+		catch (Exception e)
+		{
+			secondFailed = true;
+		}
+		assertTrue(secondFailed);
+		claimed.delete();
+		processing.delete();
+		dir.delete();
+	}
+
+	@Test
+	public void errorResultIsValidJson() throws Exception
+	{
+		java.io.File dir = new java.io.File(
+			System.getProperty("java.io.tmpdir"),
+			"ck-err-" + System.nanoTime());
+		SceneResolver.writeErrorResult(new Gson(), dir, "s.json", "batch",
+			30.0, true, "boom: \"quoted\"");
+		com.google.gson.JsonObject root = new Gson().fromJson(
+			new java.io.FileReader(new java.io.File(dir, "capture.json")),
+			com.google.gson.JsonObject.class);
+		assertEquals("error", root.get("status").getAsString());
+		assertEquals("boom: \"quoted\"", root.get("error").getAsString());
+		assertTrue(new java.io.File(dir, "ERROR").exists());
+		new java.io.File(dir, "capture.json").delete();
+		new java.io.File(dir, "ERROR").delete();
+		dir.delete();
+	}
 }
