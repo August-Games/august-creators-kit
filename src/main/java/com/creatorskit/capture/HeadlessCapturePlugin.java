@@ -1337,11 +1337,15 @@ public class HeadlessCapturePlugin extends Plugin
 		SetupSave save, double[] times, File out, CaptureOptions options) throws Exception
 	{
 		List<FrameMeta> frames = new ArrayList<>();
+		// Orbit ramp spans the captured frames: the track completes exactly
+		// on the final frame, so per-shot orbit ranges tile continuously.
+		double rangeStartSec = times.length == 0 ? 0.0 : times[0];
+		double rangeEndSec = times.length == 0 ? 0.0 : times[times.length - 1];
 		for (int i = 0; i < times.length; i++)
 		{
 			double sceneTime = times[i];
 			double tick = CaptureOptions.secToTick(sceneTime);
-			BufferedImage img = seekAndCapture(tick, options);
+			BufferedImage img = seekAndCapture(tick, sceneTime, rangeStartSec, rangeEndSec, options);
 			if (img == null)
 			{
 				log.error("Headless capture: no completed draw for t={} tick={}",
@@ -1486,6 +1490,67 @@ public class HeadlessCapturePlugin extends Plugin
 	}
 
 	/**
+	 * Per-frame orbit step: rotates the camera around the staged actors by
+	 * the track offset for this frame's scene time, then waits for the yaw
+	 * to converge before the draw is consumed, so every frame carries its
+	 * own camera angle (a real camera track, not a post zoom). Best effort:
+	 * a missed convergence logs and keeps the frame rather than failing
+	 * the job.
+	 */
+	private void applyOrbitYaw(
+		CaptureOptions options, double sceneSec, double rangeStartSec, double rangeEndSec)
+		throws Exception
+	{
+		double offsetDeg = SceneResolver.orbitOffsetDeg(
+			options.orbitDegrees, sceneSec, rangeStartSec, rangeEndSec);
+		int target = SceneResolver.orbitYawTarget(lastAimYaw, offsetDeg);
+		CountDownLatch set = new CountDownLatch(1);
+		clientThread.invokeLater(() ->
+		{
+			try
+			{
+				client.setCameraYawTarget(target);
+			}
+			finally
+			{
+				set.countDown();
+			}
+		});
+		set.await(30, TimeUnit.SECONDS);
+		long end = System.currentTimeMillis() + 5000;
+		while (System.currentTimeMillis() < end)
+		{
+			AtomicReference<Integer> ref = new AtomicReference<>();
+			CountDownLatch latch = new CountDownLatch(1);
+			clientThread.invokeLater(() ->
+			{
+				try
+				{
+					ref.set(client.getCameraYaw());
+				}
+				finally
+				{
+					latch.countDown();
+				}
+			});
+			latch.await(30, TimeUnit.SECONDS);
+			Integer cur = ref.get();
+			if (cur != null)
+			{
+				int dyaw = Math.abs(cur - target) % 2048;
+				dyaw = Math.min(dyaw, 2048 - dyaw);
+				if (dyaw <= 3)
+				{
+					return;
+				}
+			}
+			Thread.sleep(50);
+		}
+		log.warn("Headless capture orbit yaw did not converge: target={} offsetDeg={}",
+			target, offsetDeg);
+	}
+
+	/**
 	 * Resizes the game canvas (e.g. ck.capture.canvas=1540x900) so the
 	 * captured viewport reaches the requested size 1:1. Best effort.
 	 */
@@ -1552,7 +1617,9 @@ public class HeadlessCapturePlugin extends Plugin
 	 * thread, then consume exactly one completed draw. Frames only ever come
 	 * from completed draws, so there are no gaps.
 	 */
-	private BufferedImage seekAndCapture(double tick, CaptureOptions options) throws Exception
+	private BufferedImage seekAndCapture(
+		double tick, double sceneSec, double rangeStartSec, double rangeEndSec,
+		CaptureOptions options) throws Exception
 	{
 		if (client.getGameState() != GameState.LOGGED_IN)
 		{
@@ -1603,6 +1670,10 @@ public class HeadlessCapturePlugin extends Plugin
 			aimCameraAtActors(options);
 			convergeCamera();
 			cameraAimed = true;
+		}
+		if (options.orbitDegrees != 0.0 && lastAimYaw >= 0)
+		{
+			applyOrbitYaw(options, sceneSec, rangeStartSec, rangeEndSec);
 		}
 		if (options.settleMs > 0)
 		{

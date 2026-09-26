@@ -191,5 +191,28 @@ public class CaptureOptionsTest
 		assertEquals(335, o.pitch);
 		assertEquals(-1, o.zoom);
 		assertEquals(null, o.canvas);
+		assertEquals(0.0, o.orbitDegrees, 1e-9);
+	}
+
+	@Test
+	public void orbitParsesAndRejectsNonFinite()
+	{
+		CaptureOptions o = CaptureOptions.fromProperties(props(
+			"ck.capture.scene", "s.json",
+			"ck.capture.out", "/tmp/o",
+			"ck.capture.orbitDegrees", "90"));
+		assertEquals(90.0, o.orbitDegrees, 1e-9);
+		try
+		{
+			CaptureOptions.fromProperties(props(
+				"ck.capture.scene", "s.json",
+				"ck.capture.out", "/tmp/o",
+				"ck.capture.orbitDegrees", "NaN"));
+			fail("expected refusal for non-finite orbit");
+		}
+		catch (IllegalArgumentException e)
+		{
+			assertTrue(e.getMessage().contains("ck.capture.orbitDegrees"));
+		}
 	}
 }

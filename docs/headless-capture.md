@@ -37,6 +37,7 @@ unaffected.
 | `ck.capture.canvas` | unset | Resize the game canvas to `WxH` (e.g. `1540x900`) so the captured viewport reaches full size 1:1 |
 | `ck.capture.settleMs` | `500` | Settle delay after each seek, ms |
 | `ck.capture.drawTimeoutSec` | `30` | Per-frame completed-draw timeout, s |
+| `ck.capture.orbitDegrees` | `0` | Real per-frame camera orbit: total yaw rotation in degrees across the captured range, ramped linearly from the aim yaw (e.g. `90` rotates a quarter turn by the final frame). Each frame waits for yaw convergence before its draw is consumed. Requires `aimCamera` (no base aim, no orbit) |
 
 Capture also parks the mouse off the canvas (no hover text in frames)
 and stops the GPU and beginner-tooltip plugins for a clean scene.
@@ -68,6 +69,15 @@ have no visual entry and are skipped.
 At load time the plugin resolves every request against the live cache
 (player gear via the kit's player-model lookup on a clone of the local
 player composition; NPCs via the NPC lookup) and then clears the request.
+Two fidelity defaults apply at resolve time. NPC characters take their
+definition's stand/walk/run pose set wherever the scene leaves a pose
+slot at `-1` (plus a tick-0 pose keyframe when the scene has no earlier
+action), so actors idle naturally instead of holding the bind pose.
+Player gear follows the in-game appearance composition from the cache
+item definitions' wearpos cover: a worn item replaces the identity kit
+at its own wearpos and hides the kits named by its wearPos2/wearPos3
+(a full helm hides the hair and jaw kits, a platebody hides the arms
+kit), and each worn model is tagged with its own wearpos body part.
 **A scene with any still-unresolved request is refused**: nothing plays,
 an `ERROR` sentinel plus `capture.json` with the reason is written, and
 batch/stills mode exits non-zero.

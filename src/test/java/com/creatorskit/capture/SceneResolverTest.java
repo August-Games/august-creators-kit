@@ -357,6 +357,31 @@ public class SceneResolverTest
 	}
 
 	@Test
+	public void orbitRampIsLinearAndClamped()
+	{
+		assertEquals(0.0, SceneResolver.orbitOffsetDeg(90.0, 0.0, 0.0, 18.0), 1e-9);
+		assertEquals(45.0, SceneResolver.orbitOffsetDeg(90.0, 9.0, 0.0, 18.0), 1e-9);
+		assertEquals(90.0, SceneResolver.orbitOffsetDeg(90.0, 18.0, 0.0, 18.0), 1e-9);
+		assertEquals(0.0, SceneResolver.orbitOffsetDeg(90.0, -5.0, 0.0, 18.0), 1e-9);
+		assertEquals(90.0, SceneResolver.orbitOffsetDeg(90.0, 99.0, 0.0, 18.0), 1e-9);
+		assertEquals(0.0, SceneResolver.orbitOffsetDeg(0.0, 9.0, 0.0, 18.0), 1e-9);
+		assertEquals(0.0, SceneResolver.orbitOffsetDeg(90.0, 5.0, 5.0, 5.0), 1e-9);
+		assertEquals(-45.0, SceneResolver.orbitOffsetDeg(-90.0, 9.0, 0.0, 18.0), 1e-9);
+	}
+
+	@Test
+	public void orbitYawTargetWraps()
+	{
+		// 90 degrees = 512 yaw units
+		assertEquals(512, SceneResolver.orbitYawTarget(0, 90.0));
+		assertEquals(0, SceneResolver.orbitYawTarget(512, -90.0));
+		assertEquals(0, SceneResolver.orbitYawTarget(0, 360.0));
+		assertEquals(100, SceneResolver.orbitYawTarget(100, 0.0));
+		// 100 degrees = 569 units: 2000 + 569 wraps past a full turn
+		assertEquals(521, SceneResolver.orbitYawTarget(2000, 100.0));
+	}
+
+	@Test
 	public void coverComputationIsDefensive()
 	{
 		Map<Integer, int[]> cover = new HashMap<>();

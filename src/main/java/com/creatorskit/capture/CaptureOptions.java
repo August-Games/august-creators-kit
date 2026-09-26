@@ -47,6 +47,7 @@ public class CaptureOptions
 	public final int zoom;
 	public final String canvas;
 	public final boolean dumpWidgets;
+	public final double orbitDegrees;
 
 	private CaptureOptions(
 		Mode mode,
@@ -66,7 +67,8 @@ public class CaptureOptions
 		int pitch,
 		int zoom,
 		String canvas,
-		boolean dumpWidgets)
+		boolean dumpWidgets,
+		double orbitDegrees)
 	{
 		this.mode = mode;
 		this.scene = scene;
@@ -86,6 +88,7 @@ public class CaptureOptions
 		this.zoom = zoom;
 		this.canvas = canvas;
 		this.dumpWidgets = dumpWidgets;
+		this.orbitDegrees = orbitDegrees;
 	}
 
 	/** Reads options from the live system properties. */
@@ -116,11 +119,12 @@ public class CaptureOptions
 		int zoom = parseInt(get(props, "ck.capture.zoom", null), -1, "ck.capture.zoom");
 		String canvas = emptyToNull(get(props, "ck.capture.canvas", null));
 		boolean dumpWidgets = Boolean.parseBoolean(get(props, "ck.capture.dumpWidgets", "false"));
+		double orbitDegrees = parseDouble(get(props, "ck.capture.orbitDegrees", null), 0.0, "ck.capture.orbitDegrees");
 
 		CaptureOptions options = new CaptureOptions(mode, scene, out, fps,
 			startSec, endSec, stillTimes, requestDir, cropViewport,
 			settleMs, drawTimeoutSec, stageOnPlayer, stageOffset,
-			aimCamera, pitch, zoom, canvas, dumpWidgets);
+			aimCamera, pitch, zoom, canvas, dumpWidgets, orbitDegrees);
 		// Bare properties (nothing pointing at a scene or request dir, mode
 		// untouched) mean interactive use: stay idle instead of erroring.
 		options.validate(scene != null || requestDir != null || modeExplicit);
@@ -150,6 +154,10 @@ public class CaptureOptions
 		if (settleMs < 0)
 		{
 			throw new IllegalArgumentException("ck.capture.settleMs must be >= 0");
+		}
+		if (!Double.isFinite(orbitDegrees))
+		{
+			throw new IllegalArgumentException("ck.capture.orbitDegrees must be finite");
 		}
 		if (drawTimeoutSec <= 0)
 		{

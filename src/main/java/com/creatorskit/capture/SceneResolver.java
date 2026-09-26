@@ -288,6 +288,44 @@ public final class SceneResolver
 		}
 	}
 
+	/** Camera yaw units per full turn (vanilla 11-bit camera yaw). */
+	public static final int YAW_UNITS_PER_TURN = 2048;
+
+	/**
+	 * Orbit offset in degrees at a frame time: a linear ramp from 0 at the
+	 * range start to {@code orbitDegrees} at the range end, clamped at both
+	 * ends so cuts and stills outside the range hold their endpoint. Pure
+	 * so the per-frame camera track stays unit-testable.
+	 */
+	public static double orbitOffsetDeg(
+		double orbitDegrees, double sceneSec, double rangeStartSec, double rangeEndSec)
+	{
+		if (!Double.isFinite(orbitDegrees) || !Double.isFinite(sceneSec)
+			|| !Double.isFinite(rangeStartSec) || !Double.isFinite(rangeEndSec)
+			|| rangeEndSec <= rangeStartSec)
+		{
+			return 0.0;
+		}
+		double frac = (sceneSec - rangeStartSec) / (rangeEndSec - rangeStartSec);
+		frac = Math.min(1.0, Math.max(0.0, frac));
+		return orbitDegrees * frac;
+	}
+
+	/**
+	 * Camera yaw target for an orbit offset: the base aim yaw plus the
+	 * offset converted to yaw units, wrapped to [0, 2048).
+	 */
+	public static int orbitYawTarget(int baseYaw, double offsetDeg)
+	{
+		int units = (int) Math.round(offsetDeg * YAW_UNITS_PER_TURN / 360.0);
+		int yaw = (baseYaw + units) % YAW_UNITS_PER_TURN;
+		if (yaw < 0)
+		{
+			yaw += YAW_UNITS_PER_TURN;
+		}
+		return yaw;
+	}
+
 	/**
 	 * Re-bases one authored tile onto the player in a shared coordinate
 	 * space (template space inside instances, plain tiles otherwise):
