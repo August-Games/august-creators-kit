@@ -49,6 +49,7 @@ public class CaptureOptions
 	public final boolean dumpWidgets;
 	public final double orbitDegrees;
 	public final double aimHeightTiles;
+	public final boolean hideEntities;
 
 	private CaptureOptions(
 		Mode mode,
@@ -70,7 +71,8 @@ public class CaptureOptions
 		String canvas,
 		boolean dumpWidgets,
 		double orbitDegrees,
-		double aimHeightTiles)
+		double aimHeightTiles,
+		boolean hideEntities)
 	{
 		this.mode = mode;
 		this.scene = scene;
@@ -92,6 +94,7 @@ public class CaptureOptions
 		this.dumpWidgets = dumpWidgets;
 		this.orbitDegrees = orbitDegrees;
 		this.aimHeightTiles = aimHeightTiles;
+		this.hideEntities = hideEntities;
 	}
 
 	/** Reads options from the live system properties. */
@@ -124,11 +127,12 @@ public class CaptureOptions
 		boolean dumpWidgets = Boolean.parseBoolean(get(props, "ck.capture.dumpWidgets", "false"));
 		double orbitDegrees = parseDouble(get(props, "ck.capture.orbitDegrees", null), 0.0, "ck.capture.orbitDegrees");
 		double aimHeightTiles = parseDouble(get(props, "ck.capture.aimHeightTiles", null), 1.0, "ck.capture.aimHeightTiles");
+		boolean hideEntities = Boolean.parseBoolean(get(props, "ck.capture.hideEntities", "false"));
 
 		CaptureOptions options = new CaptureOptions(mode, scene, out, fps,
 			startSec, endSec, stillTimes, requestDir, cropViewport,
 			settleMs, drawTimeoutSec, stageOnPlayer, stageOffset,
-			aimCamera, pitch, zoom, canvas, dumpWidgets, orbitDegrees, aimHeightTiles);
+			aimCamera, pitch, zoom, canvas, dumpWidgets, orbitDegrees, aimHeightTiles, hideEntities);
 		// Bare properties (nothing pointing at a scene or request dir, mode
 		// untouched) mean interactive use: stay idle instead of erroring.
 		options.validate(scene != null || requestDir != null || modeExplicit);

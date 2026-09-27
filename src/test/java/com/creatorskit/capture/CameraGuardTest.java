@@ -52,4 +52,55 @@ public class CameraGuardTest
 	{
 		assertTrue(HeadlessCapturePlugin.cameraBelowTerrain(500, 400));
 	}
+
+	@Test
+	public void swathCoversEndpointsAndNeighbours()
+	{
+		java.util.List<int[]> swath = HeadlessCapturePlugin.swathTiles(50, 50, 56, 50);
+		boolean start = false;
+		boolean end = false;
+		boolean beside = false;
+		for (int[] t : swath)
+		{
+			if (t[0] == 50 && t[1] == 50)
+			{
+				start = true;
+			}
+			if (t[0] == 56 && t[1] == 50)
+			{
+				end = true;
+			}
+			if (t[0] == 53 && t[1] == 51)
+			{
+				beside = true;
+			}
+		}
+		assertTrue(start);
+		assertTrue(end);
+		assertTrue(beside);
+	}
+
+	@Test
+	public void swathDegenerateIsOneRing()
+	{
+		java.util.List<int[]> swath = HeadlessCapturePlugin.swathTiles(7, 7, 7, 7);
+		assertTrue(swath.size() == 9);
+	}
+
+	@Test
+	public void tallSceneryThreshold()
+	{
+		assertFalse(HeadlessCapturePlugin.tallScenery(0));
+		assertFalse(HeadlessCapturePlugin.tallScenery(
+			HeadlessCapturePlugin.TALL_SCENERY_MIN_HEIGHT - 1));
+		assertTrue(HeadlessCapturePlugin.tallScenery(
+			HeadlessCapturePlugin.TALL_SCENERY_MIN_HEIGHT));
+	}
+
+	@Test
+	public void maxModelHeightNullSafe()
+	{
+		assertTrue(HeadlessCapturePlugin.maxModelHeight() == 0);
+		assertTrue(HeadlessCapturePlugin.maxModelHeight(null, null) == 0);
+	}
 }

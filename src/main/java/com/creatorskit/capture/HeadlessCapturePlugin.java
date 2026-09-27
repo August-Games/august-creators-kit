@@ -18,7 +18,10 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
@@ -29,7 +32,14 @@ import javax.swing.SwingUtilities;
 import net.runelite.api.Client;
 import net.runelite.api.CollisionData;
 import net.runelite.api.CollisionDataFlag;
+import net.runelite.api.DecorativeObject;
+import net.runelite.api.GameObject;
 import net.runelite.api.GameState;
+import net.runelite.api.NPC;
+import net.runelite.api.Player;
+import net.runelite.api.Renderable;
+import net.runelite.api.Tile;
+import net.runelite.api.WallObject;
 import net.runelite.api.Perspective;
 import net.runelite.api.PlayerComposition;
 import net.runelite.api.ScriptID;
@@ -1554,6 +1564,24 @@ public class HeadlessCapturePlugin extends Plugin
 	private boolean cameraAimed = false;
 
 	/**
+	 * Aim-time focal tile in scene coords (pv2 teaser: view-cone guard).
+	 * Set by aimCameraAtActors, read per frame by checkCameraClear so the
+	 * whole orbit arc is covered. Integer.MIN_VALUE while unset.
+	 */
+	private int focalSceneX = Integer.MIN_VALUE;
+
+	private int focalSceneY = Integer.MIN_VALUE;
+
+	private int hideLogCounter = 0;
+
+	/**
+	 * View-cone scenery tiles already reported this job (pv2 teaser):
+	 * the cone guard runs per frame, so without this the same object
+	 * logs hundreds of times per shot.
+	 */
+	private final Set<Integer> coneSceneryLogged = new HashSet<>();
+
+	/**
 	 * Capture-mode camera override: focal point on the staged actors (they
 	 * stay centred, the capturing player drops out of frame), yaw facing
 	 * them, configured pitch/zoom. Disabled with ck.capture.aimCamera=false.
@@ -1634,6 +1662,10 @@ public class HeadlessCapturePlugin extends Plugin
 						options.aimHeightTiles * 128.0);
 					client.setCameraFocalPointY(focalY);
 					focal = lp.getX() + "/" + lp.getY() + "/" + focalY;
+					focalSceneX = lp.getSceneX();
+					focalSceneY = lp.getSceneY();
+					coneSceneryLogged.clear();
+					hideLogCounter = 0;
 				}
 				lastAimYaw = yaw;
 				lastAimPitch = pitch;
@@ -1684,6 +1716,113 @@ public class HeadlessCapturePlugin extends Plugin
 	static boolean cameraBelowTerrain(int cameraDown, int tileDown)
 	{
 		return cameraDown > tileDown + 32;
+	}
+
+	/**
+	 * Ambient-entity hiding for per-shot capture (pv2 teaser, 022).
+	 * Each shot's capture job stages ONLY its subject actors as kit
+	 * characters; world NPCs and other players sharing the area (the
+	 * Warriors' Guild cyclopes, field goblins) would otherwise wander
+	 * into frame. Marks every real NPC and non-local player dead every
+	 * frame on the client thread: dead actors are skipped by the scene
+	 * draw, while kit characters (custom comps, not NPC/Player objects)
+	 * render untouched. The local player stays visible: the compile-time
+	 * staging audit already projects it fully outside the crop rect.
+	 * Must run on the client thread (caller in seekAndCapture ensures).
+	 */
+	private void hideAmbientEntities(CaptureOptions options)
+	{
+		if (!options.hideEntities)
+		{
+			return;
+		}
+		Player local = client.getLocalPlayer();
+		int npcs = 0;
+		for (NPC npc : client.getNpcs())
+		{
+			if (npc != null && !npc.isDead())
+			{
+				npc.setDead(true);
+				npcs++;
+			}
+		}
+		int players = 0;
+		for (Player p : client.getPlayers())
+		{
+			if (p != null && p != local && !p.isDead())
+			{
+				p.setDead(true);
+				players++;
+			}
+		}
+		if (npcs + players > 0 || hideLogCounter % 60 == 0)
+		{
+			log.warn("Headless capture ambient hide: {} NPCs + {} players newly hidden",
+				npcs, players);
+		}
+		hideLogCounter++;
+	}
+
+	/**
+	 * Minimum scenery model height (local units, 128 per tile) that counts
+	 * as a view-cone occluder. Walls, columns, trees and dense bushes all
+	 * clear it; ground clutter (grass tufts, stalagmites, low fences) does
+	 * not. Calibrated by the v12 probe render (lenient object log); bump
+	 * only with a new probe measurement, never by eye.
+	 */
+	static final int TALL_SCENERY_MIN_HEIGHT = 224;
+
+	/**
+	 * 3-wide tile swath around the camera-to-focal segment (scene coords).
+	 * Pure for unit tests: DDA walk plus the Chebyshev-1 ring, deduped in
+	 * walk order, so beside-axis occluders (the home white column) fail as
+	 * well as on-axis ones.
+	 */
+	static List<int[]> swathTiles(int x0, int y0, int x1, int y1)
+	{
+		Set<Integer> seen = new LinkedHashSet<>();
+		List<int[]> out = new ArrayList<>();
+		int steps = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)) * 2;
+		for (int i = 0; i <= steps; i++)
+		{
+			double t = steps == 0 ? 0.0 : (double) i / steps;
+			int px = (int) Math.round(x0 + (x1 - x0) * t);
+			int py = (int) Math.round(y0 + (y1 - y0) * t);
+			for (int dx = -1; dx <= 1; dx++)
+			{
+				for (int dy = -1; dy <= 1; dy++)
+				{
+					int key = ((px + dx) << 16) | ((py + dy) & 0xFFFF);
+					if (seen.add(key))
+					{
+						out.add(new int[]{px + dx, py + dy});
+					}
+				}
+			}
+		}
+		return out;
+	}
+
+	/**
+	 * True when a scenery model height occludes the view cone. Pure for
+	 * unit tests.
+	 */
+	static boolean tallScenery(int modelHeight)
+	{
+		return modelHeight >= TALL_SCENERY_MIN_HEIGHT;
+	}
+
+	static int maxModelHeight(Renderable... renderables)
+	{
+		int h = 0;
+		for (Renderable r : renderables)
+		{
+			if (r != null)
+			{
+				h = Math.max(h, r.getModelHeight());
+			}
+		}
+		return h;
 	}
 
 	/**
@@ -1745,6 +1884,142 @@ public class HeadlessCapturePlugin extends Plugin
 			{
 				throw new IllegalStateException(msg);
 			}
+		}
+		checkViewConeClear(lenient);
+	}
+
+	/**
+	 * View-cone guard (pv2 teaser, 022): every tile in a 3-wide swath
+	 * around the camera-to-focal segment must hold no sight-blocking
+	 * collision and no tall scenery object, and no live (non-hidden)
+	 * NPC/player may stand on one. Runs per frame from checkCameraClear
+	 * so the whole orbit arc is covered; fails naming the scene tile (or
+	 * logs it in lenient probe mode) instead of shipping an occlusion.
+	 */
+	private void checkViewConeClear(boolean lenient)
+	{
+		if (focalSceneX == Integer.MIN_VALUE)
+		{
+			return;
+		}
+		int plane = client.getTopLevelWorldView().getPlane();
+		LocalPoint camLp = new LocalPoint(
+			client.getCameraX(), client.getCameraY());
+		List<int[]> swath = swathTiles(
+			camLp.getSceneX(), camLp.getSceneY(), focalSceneX, focalSceneY);
+		Set<Integer> liveActors = new HashSet<>();
+		for (NPC npc : client.getNpcs())
+		{
+			if (npc != null && !npc.isDead()
+				&& npc.getLocalLocation() != null)
+			{
+				liveActors.add((npc.getLocalLocation().getSceneX() << 16)
+					| (npc.getLocalLocation().getSceneY() & 0xFFFF));
+			}
+		}
+		for (Player p : client.getPlayers())
+		{
+			if (p != null && !p.isDead() && p.getLocalLocation() != null)
+			{
+				liveActors.add((p.getLocalLocation().getSceneX() << 16)
+					| (p.getLocalLocation().getSceneY() & 0xFFFF));
+			}
+		}
+		Tile[][][] tiles = client.getTopLevelWorldView().getScene().getTiles();
+		CollisionData[] maps = client.getCollisionMaps();
+		int[][] flags = (maps != null && plane >= 0 && plane < maps.length
+			&& maps[plane] != null) ? maps[plane].getFlags() : null;
+		for (int[] t : swath)
+		{
+			int x = t[0];
+			int y = t[1];
+			int key = (x << 16) | (y & 0xFFFF);
+			if (liveActors.contains(key))
+			{
+				guardFail(lenient, "non-scene actor in view cone at scene "
+					+ x + "," + y + " plane " + plane);
+			}
+			if (flags != null && x >= 0 && y >= 0
+				&& x < flags.length && y < flags[x].length
+				&& cameraTileBlocked(flags[x][y]))
+			{
+				guardFail(lenient, "sight-blocker in view cone at scene "
+					+ x + "," + y + " plane " + plane
+					+ " flags=0x" + Integer.toHexString(flags[x][y]));
+			}
+			if (tiles != null && plane >= 0 && plane < tiles.length
+				&& x >= 0 && y >= 0 && x < tiles[plane].length
+				&& y < tiles[plane][x].length)
+			{
+				Tile tile = tiles[plane][x][y];
+				if (tile != null)
+				{
+					int h = 0;
+					int id = -1;
+					GameObject[] gos = tile.getGameObjects();
+					if (gos != null)
+					{
+						for (GameObject go : gos)
+						{
+							if (go == null)
+							{
+								continue;
+							}
+							int gh = maxModelHeight(go.getRenderable());
+							if (gh > h)
+							{
+								h = gh;
+								id = go.getId();
+							}
+						}
+					}
+					WallObject wall = tile.getWallObject();
+					if (wall != null)
+					{
+						int wh = maxModelHeight(
+							wall.getRenderable1(), wall.getRenderable2());
+						if (wh > h)
+						{
+							h = wh;
+							id = wall.getId();
+						}
+					}
+					DecorativeObject decor = tile.getDecorativeObject();
+					if (decor != null)
+					{
+						int dh = maxModelHeight(decor.getRenderable(),
+							decor.getRenderable2());
+						if (dh > h)
+						{
+							h = dh;
+							id = decor.getId();
+						}
+					}
+					if (h > 0 && coneSceneryLogged.add(key))
+					{
+						log.warn("Headless capture view cone: scenery id={} h={} at scene {},{} plane {}",
+							id, h, x, y, plane);
+					}
+					if (tallScenery(h))
+					{
+						guardFail(lenient, "tall scenery id=" + id + " h=" + h
+							+ " in view cone at scene " + x + "," + y
+							+ " plane " + plane);
+					}
+				}
+			}
+		}
+	}
+
+	private void guardFail(boolean lenient, String msg)
+	{
+		if (lenient)
+		{
+			log.error("Headless capture camera guard (lenient): {}", msg);
+		}
+		else
+		{
+			throw new IllegalStateException(msg);
 		}
 	}
 
@@ -1936,6 +2211,7 @@ public class HeadlessCapturePlugin extends Plugin
 				}
 				creators.getCreatorsPanel().getToolBox().getProgrammer()
 					.updatePrograms(tick);
+				hideAmbientEntities(options);
 			}
 			catch (Exception e)
 			{

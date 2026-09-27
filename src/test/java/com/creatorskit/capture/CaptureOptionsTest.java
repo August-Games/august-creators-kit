@@ -215,4 +215,23 @@ public class CaptureOptionsTest
 			assertTrue(e.getMessage().contains("ck.capture.orbitDegrees"));
 		}
 	}
+
+	@Test
+	public void hideEntitiesDefaultsOff()
+	{
+		CaptureOptions o = CaptureOptions.fromProperties(props(
+			"ck.capture.scene", "s.json",
+			"ck.capture.out", "/tmp/o"));
+		assertFalse(o.hideEntities);
+	}
+
+	@Test
+	public void hideEntitiesParsesTrue()
+	{
+		CaptureOptions o = CaptureOptions.fromProperties(props(
+			"ck.capture.scene", "s.json",
+			"ck.capture.out", "/tmp/o",
+			"ck.capture.hideEntities", "true"));
+		assertTrue(o.hideEntities);
+	}
 }
