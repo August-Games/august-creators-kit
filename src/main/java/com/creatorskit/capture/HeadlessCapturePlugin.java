@@ -1439,7 +1439,16 @@ public class HeadlessCapturePlugin extends Plugin
 				{
 					client.setCameraFocalPointX(lp.getX());
 					client.setCameraFocalPointZ(lp.getY());
-					focal = lp.getX() + "/" + lp.getY();
+					// Raised look-at (pv2 teaser): aim aimHeightTiles
+					// above the ground so a 45%-frame hero fits
+					// head-to-feet; one tile = 128 world units.
+					int tileH = client.getTopLevelWorldView().getTileHeight(
+						lp.getX(), lp.getY(),
+						client.getTopLevelWorldView().getPlane());
+					int focalY = tileH - (int) Math.round(
+						options.aimHeightTiles * 128.0);
+					client.setCameraFocalPointY(focalY);
+					focal = lp.getX() + "/" + lp.getY() + "/" + focalY;
 				}
 				lastAimYaw = yaw;
 				lastAimPitch = pitch;
