@@ -2523,6 +2523,21 @@ public class HeadlessCapturePlugin extends Plugin
 		// so the whole orbit arc is covered, failing loudly with the
 		// tile instead of shipping black frames.
 		checkCameraClear();
+		// Per-frame pose (pv2 030): the orbit moves yaw at fixed
+		// pitch/dist, so camera height-down must stay constant; an
+		// engine terrain-lift mid-arc otherwise ships a sunk hero
+		// silently. The runner fails the shot when the Z range past
+		// the settle frames exceeds its drift budget.
+		try
+		{
+			log.warn("Headless capture framepose: tick={} sceneSec={} xyz={}/{}/{}",
+				tick, sceneSec, client.getCameraX(), client.getCameraY(),
+				client.getCameraZ());
+		}
+		catch (Exception poseEx)
+		{
+			log.warn("Headless capture framepose unreadable: {}", poseEx.toString());
+		}
 		if (options.settleMs > 0)
 		{
 			Thread.sleep(options.settleMs);
