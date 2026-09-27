@@ -454,7 +454,7 @@ public class HeadlessCapturePlugin extends Plugin
 			{
 				dumpWidgets();
 			}
-			cameraAimed = false;
+			resetAimState();
 			parkMouseOffCanvas();
 			quietClientForCapture();
 
@@ -1574,6 +1574,23 @@ public class HeadlessCapturePlugin extends Plugin
 	private int lastAimPitch = -1;
 
 	private boolean cameraAimed = false;
+
+	/**
+	 * Job-start aim state (029 K1): the view-cone guard reads the focal
+	 * stashed by aimCameraAtActors, so a job with aimCamera=false must
+	 * not inherit the previous job's focal. The MIN_VALUE sentinel in
+	 * checkViewConeClear then skips the cone check until the current
+	 * job aims (aim re-stashes before any frame is checked).
+	 */
+	void resetAimState()
+	{
+		cameraAimed = false;
+		focalSceneX = Integer.MIN_VALUE;
+		focalSceneY = Integer.MIN_VALUE;
+		focalLocalX = Integer.MIN_VALUE;
+		focalLocalY = Integer.MIN_VALUE;
+		focalDown = 0;
+	}
 
 	/**
 	 * Aim-time focal tile in scene coords (pv2 teaser: view-cone guard).

@@ -7,6 +7,7 @@ import net.runelite.api.Renderable;
 import net.runelite.client.callback.RenderCallbackManager;
 import org.junit.Test;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -255,6 +256,48 @@ public class CameraGuardTest
 		mgr.unregister(HeadlessCapturePlugin.AMBIENT_HIDE_CALLBACK);
 		assertTrue(mgr.addEntity(npc, false));
 		assertTrue(mgr.addEntity(scenery, false));
+	}
+
+	@Test
+	public void jobStartClearsStaleFocal() throws Exception
+	{
+		// 029 K1: an aimCamera=false job must not run the cone guard
+		// on the previous job's focal. A bare instance suffices: the
+		// reset touches only primitive fields (injected deps unused).
+		HeadlessCapturePlugin plugin = new HeadlessCapturePlugin();
+		setPluginInt(plugin, "focalSceneX", 41);
+		setPluginInt(plugin, "focalSceneY", 42);
+		setPluginInt(plugin, "focalLocalX", 5248);
+		setPluginInt(plugin, "focalLocalY", 5376);
+		setPluginInt(plugin, "focalDown", -300);
+		plugin.resetAimState();
+		assertEquals(Integer.MIN_VALUE, getPluginInt(plugin, "focalSceneX"));
+		assertEquals(Integer.MIN_VALUE, getPluginInt(plugin, "focalSceneY"));
+		assertEquals(Integer.MIN_VALUE, getPluginInt(plugin, "focalLocalX"));
+		assertEquals(Integer.MIN_VALUE, getPluginInt(plugin, "focalLocalY"));
+		assertEquals(0, getPluginInt(plugin, "focalDown"));
+		java.lang.reflect.Field aimed =
+			HeadlessCapturePlugin.class.getDeclaredField("cameraAimed");
+		aimed.setAccessible(true);
+		assertFalse((boolean) aimed.get(plugin));
+	}
+
+	private static void setPluginInt(HeadlessCapturePlugin plugin, String field, int value)
+		throws Exception
+	{
+		java.lang.reflect.Field f =
+			HeadlessCapturePlugin.class.getDeclaredField(field);
+		f.setAccessible(true);
+		f.setInt(plugin, value);
+	}
+
+	private static int getPluginInt(HeadlessCapturePlugin plugin, String field)
+		throws Exception
+	{
+		java.lang.reflect.Field f =
+			HeadlessCapturePlugin.class.getDeclaredField(field);
+		f.setAccessible(true);
+		return f.getInt(plugin);
 	}
 
 	@Test
