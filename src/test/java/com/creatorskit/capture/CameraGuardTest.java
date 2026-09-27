@@ -1,6 +1,10 @@
 package com.creatorskit.capture;
 
 import net.runelite.api.CollisionDataFlag;
+import net.runelite.api.Model;
+import net.runelite.api.NPC;
+import net.runelite.api.Renderable;
+import net.runelite.client.callback.RenderCallbackManager;
 import org.junit.Test;
 
 import static org.junit.Assert.assertFalse;
@@ -169,5 +173,99 @@ public class CameraGuardTest
 		assertTrue(HeadlessCapturePlugin.skipConeObject(-1));
 		assertFalse(HeadlessCapturePlugin.skipConeObject(0));
 		assertFalse(HeadlessCapturePlugin.skipConeObject(218));
+	}
+
+	@Test
+	public void hideRefusesNpcAndEveryPlayer()
+	{
+		// Local-player capture bot included: staged scene actors are
+		// kit RuneLiteObjects (never engine Players), so refusing all
+		// players cannot hide the pair.
+		assertTrue(HeadlessCapturePlugin.hideCaptureRenderable(true, false));
+		assertTrue(HeadlessCapturePlugin.hideCaptureRenderable(false, true));
+		assertTrue(HeadlessCapturePlugin.hideCaptureRenderable(true, true));
+		assertFalse(HeadlessCapturePlugin.hideCaptureRenderable(false, false));
+	}
+
+	@Test
+	public void hideLifecycleSymmetricThroughRealManager()
+	{
+		// No mocks: a real RenderCallbackManager plus an NPC proxy (the
+		// callback only reaches instanceof, so the handler never runs)
+		// and a plain non-actor Renderable fake.
+		RenderCallbackManager mgr = new RenderCallbackManager();
+		NPC npc = (NPC) java.lang.reflect.Proxy.newProxyInstance(
+			getClass().getClassLoader(),
+			new Class<?>[]{NPC.class},
+			(proxy, method, args) -> null);
+		Renderable scenery = new Renderable()
+		{
+			@Override
+			public Model getModel()
+			{
+				return null;
+			}
+
+			@Override
+			public int getModelHeight()
+			{
+				return 0;
+			}
+
+			@Override
+			public void setModelHeight(int height)
+			{
+			}
+
+			@Override
+			public int getAnimationHeightOffset()
+			{
+				return 0;
+			}
+
+			@Override
+			public int getRenderMode()
+			{
+				return 0;
+			}
+
+			@Override
+			public net.runelite.api.Node getNext()
+			{
+				return null;
+			}
+
+			@Override
+			public net.runelite.api.Node getPrevious()
+			{
+				return null;
+			}
+
+			@Override
+			public long getHash()
+			{
+				return 0;
+			}
+		};
+		mgr.register(HeadlessCapturePlugin.AMBIENT_HIDE_CALLBACK);
+		assertFalse(mgr.addEntity(npc, false));
+		assertTrue(mgr.addEntity(scenery, false));
+		// Unregister restores the world: a later job with hiding off
+		// (and the live client after shutdown) renders everything.
+		mgr.unregister(HeadlessCapturePlugin.AMBIENT_HIDE_CALLBACK);
+		assertTrue(mgr.addEntity(npc, false));
+		assertTrue(mgr.addEntity(scenery, false));
+	}
+
+	@Test
+	public void clearsAboveLowObstacle()
+	{
+		// Height-down units: camera 500 above the tile ground flies over
+		// any fence/garden wall (256 clearance); at 50 above (inside the
+		// mass) or below the ground the flags still fail.
+		assertTrue(HeadlessCapturePlugin.cameraClearsLowObstacle(-500, 0));
+		assertFalse(HeadlessCapturePlugin.cameraClearsLowObstacle(-50, 0));
+		assertFalse(HeadlessCapturePlugin.cameraClearsLowObstacle(100, 0));
+		assertFalse(HeadlessCapturePlugin.cameraClearsLowObstacle(-256, 0));
 	}
 }

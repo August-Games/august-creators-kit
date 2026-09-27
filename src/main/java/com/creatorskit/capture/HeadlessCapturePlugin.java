@@ -139,6 +139,9 @@ public class HeadlessCapturePlugin extends Plugin
 				Thread.currentThread().interrupt();
 			}
 		}
+		// Never leak the refusal past shutdown: later jobs and the live
+		// client must render the world unhidden.
+		unhideAmbientEntities();
 	}
 
 	@Subscribe
@@ -490,6 +493,12 @@ public class HeadlessCapturePlugin extends Plugin
 			{
 			}
 			return 1;
+		}
+		finally
+		{
+			// Symmetric cleanup: a later job with hideEntities=false
+			// must see the world unhidden.
+			unhideAmbientEntities();
 		}
 	}
 
@@ -1722,6 +1731,21 @@ public class HeadlessCapturePlugin extends Plugin
 			| CollisionDataFlag.BLOCK_LINE_OF_SIGHT_FULL)) != 0;
 	}
 
+	static final int LOW_OBSTACLE_CLEAR_PX = 256;
+
+	/**
+	 * True when the camera flies higher above the tile ground than any
+	 * low obstacle (fence, garden wall) can reach, so 2D collision flags
+	 * alone are advisory, not intersection. Both inputs are height-down
+	 * local units: a larger tile value is lower ground. Pure for unit
+	 * tests. Tall canopies still engulfing the lens stay the cone
+	 * guard's burial job on the neighbouring tiles.
+	 */
+	static boolean cameraClearsLowObstacle(int cameraDown, int tileDown)
+	{
+		return tileDown - cameraDown > LOW_OBSTACLE_CLEAR_PX;
+	}
+
 	/**
 	 * True when the camera height sits below the terrain (plus a small
 	 * tolerance). Both inputs are height-down local units, so a larger
@@ -1737,45 +1761,65 @@ public class HeadlessCapturePlugin extends Plugin
 	 * Each shot's capture job stages ONLY its subject actors as kit
 	 * characters (RuneLiteObjects, not NPC/Player instances); world NPCs
 	 * and other players sharing the area (the Warriors' Guild cyclopes,
-	 * field goblins) would otherwise wander into frame. Registers a
-	 * RenderCallback that refuses every NPC and every non-local player
-	 * before it joins the scene — the same mechanism as the client's
-	 * EntityHider, so spotanims, projectiles, TileObjects and the kit's
-	 * own RuneLiteObjects (the staged pair, the flurry gfx) draw
-	 * untouched. The local player stays visible: the compile-time
-	 * staging audit already projects it fully outside the crop rect.
-	 * (Actor.setDead does NOT suppress rendering — death state only —
-	 * so a flag-based hide silently no-ops; the probe proved it.)
+	 * field goblins) would otherwise wander into frame — and the capture
+	 * bot itself (the local player) stands inside the portrait crop.
+	 * The callback refuses every NPC and every player INCLUDING the
+	 * local player before it joins the scene — the same mechanism as the
+	 * client's EntityHider, so spotanims, projectiles, TileObjects and
+	 * the kit's own RuneLiteObjects (the staged pair, the flurry gfx)
+	 * draw untouched. (Actor.setDead does NOT suppress rendering — death
+	 * state only — so a flag-based hide silently no-ops; the probe
+	 * proved it.) The compile-time bot-in-crop audit passes exactly when
+	 * this hiding is active for the run.
 	 */
-	private final RenderCallback ambientHideCallback = new RenderCallback()
+	static boolean hideCaptureRenderable(boolean isNpc, boolean isPlayer)
+	{
+		return isNpc || isPlayer;
+	}
+
+	static final RenderCallback AMBIENT_HIDE_CALLBACK = new RenderCallback()
 	{
 		@Override
 		public boolean addEntity(Renderable renderable, boolean ui)
 		{
-			if (renderable instanceof NPC)
-			{
-				return false;
-			}
-			if (renderable instanceof Player
-				&& renderable != client.getLocalPlayer())
-			{
-				return false;
-			}
-			return true;
+			return !hideCaptureRenderable(
+				renderable instanceof NPC, renderable instanceof Player);
 		}
 	};
 
 	private boolean ambientHideRegistered = false;
 
+	void setAmbientHide(RenderCallbackManager mgr, boolean hide)
+	{
+		if (hide && !ambientHideRegistered)
+		{
+			mgr.register(AMBIENT_HIDE_CALLBACK);
+			ambientHideRegistered = true;
+			log.warn("Headless capture ambient hide on: NPCs + all players incl. local capture bot suppressed");
+		}
+		else if (!hide && ambientHideRegistered)
+		{
+			try
+			{
+				mgr.unregister(AMBIENT_HIDE_CALLBACK);
+			}
+			catch (RuntimeException unregisterEx)
+			{
+				log.warn("Headless capture ambient hide unregister failed: {}",
+					unregisterEx.toString());
+			}
+			ambientHideRegistered = false;
+		}
+	}
+
 	private void hideAmbientEntities(CaptureOptions options)
 	{
-		if (!options.hideEntities || ambientHideRegistered)
-		{
-			return;
-		}
-		renderCallbackManager.register(ambientHideCallback);
-		ambientHideRegistered = true;
-		log.warn("Headless capture ambient hide on: NPCs + non-local players suppressed");
+		setAmbientHide(renderCallbackManager, options.hideEntities);
+	}
+
+	private void unhideAmbientEntities()
+	{
+		setAmbientHide(renderCallbackManager, false);
 	}
 
 	/**
@@ -2010,12 +2054,12 @@ public class HeadlessCapturePlugin extends Plugin
 		int sx = camLp.getSceneX();
 		int sy = camLp.getSceneY();
 		// Solid-ground check (pv2 021 fix 6): the camera fails on a
-		// collision-blocked tile (inside a wall/trunk/column mass).
-		// Canopy/foliage tiles carry no collision and pass — near-plane
-		// clipping removes them, which clean frames confirm — while the
-		// cone below owns everything past the camera tile. Known limit:
-		// a camera parked high above a LOW wall tile still trips this
-		// (e.g. teaser home (22,5)); keep camera tiles off wall lines.
+		// collision-blocked tile it is actually inside (wall/trunk mass
+		// at lens height). Flags alone are advisory when the lens flies
+		// higher above the tile ground than a low obstacle can reach;
+		// tall canopies engulfing the lens stay the cone guard's burial
+		// job on the neighbouring tiles. Unreadable ground height fails
+		// closed (flags enforced).
 		CollisionData[] maps = client.getCollisionMaps();
 		if (maps != null && plane >= 0 && plane < maps.length
 			&& maps[plane] != null)
@@ -2025,9 +2069,32 @@ public class HeadlessCapturePlugin extends Plugin
 				&& sx < flags.length && sy < flags[sx].length
 				&& cameraTileBlocked(flags[sx][sy]))
 			{
-				guardFail(lenient, "capture camera inside wall/object "
-					+ "at scene " + sx + "," + sy + " plane " + plane
-					+ " flags=0x" + Integer.toHexString(flags[sx][sy]));
+				boolean clears = false;
+				try
+				{
+					int groundH = client.getTopLevelWorldView()
+						.getTileHeight(client.getCameraX(),
+							client.getCameraY(), plane);
+					clears = cameraClearsLowObstacle(
+						client.getCameraZ(), groundH);
+				}
+				catch (RuntimeException groundEx)
+				{
+					clears = false;
+				}
+				if (!clears)
+				{
+					guardFail(lenient, "capture camera inside wall/object "
+						+ "at scene " + sx + "," + sy + " plane " + plane
+						+ " flags=0x" + Integer.toHexString(flags[sx][sy]));
+				}
+				else
+				{
+					log.warn("Headless capture camera above low obstacle "
+						+ "(advisory) at scene " + sx + "," + sy + " plane "
+						+ plane + " flags=0x"
+						+ Integer.toHexString(flags[sx][sy]));
+				}
 			}
 		}
 		int tileH = Perspective.getTileHeight(client, camLp, plane);
@@ -2094,10 +2161,12 @@ public class HeadlessCapturePlugin extends Plugin
 			camLp.getSceneX(), camLp.getSceneY(), focalSceneX, focalSceneY,
 			tanHalfWidth);
 		// Live-actor presence only means visibility when nothing hides
-		// them: with ambient hiding on, every NPC/non-local player is
-		// refused at the scene gate by construction (and the frames prove
-		// it), so listing them here would false-positive on every shot.
-		// The local player is audited separately (compile-time rule 3).
+		// them: with ambient hiding on, every NPC and every player
+		// including the local-player capture bot is refused at the scene
+		// gate by construction (and the frames prove it), so listing them
+		// here would false-positive on every shot. The local player is
+		// additionally audited at compile time (rule 3) for runs without
+		// hiding.
 		Set<Integer> liveActors = new HashSet<>();
 		if (!ambientHideRegistered)
 		{
