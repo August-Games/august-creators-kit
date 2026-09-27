@@ -1596,25 +1596,22 @@ public class HeadlessCapturePlugin extends Plugin
 
 	/**
 	 * Actor terrain-fit report (pv2 036 diagnostic): one `name@x,y
-	 * objZ=.. centreH=.. ring[lo,hi]` fragment per staged character,
-	 * plus the local player's tile height for context. All reads are
-	 * guarded: a bare instance (unit tests) reports unavailable instead
-	 * of throwing.
+	 * objZ=.. centreH=.. ring[lo,hi]` fragment per staged character.
+	 * All reads are guarded: a bare instance (unit tests) reports
+	 * unavailable instead of throwing.
 	 */
 	String actorTerrainReport()
 	{
 		StringBuilder sb = new StringBuilder();
 		try
 		{
+			// NOTE: only capture-thread-safe reads here (same set the
+			// per-frame checkCameraClear uses). In particular NEVER
+			// Actor.getWorldLocation(): ClientEntity asserts it with
+			// "must be called on client thread". The staged hero is a
+			// kit character ("Hero"), so no player read is needed.
 			WorldView wv = client.getTopLevelWorldView();
 			int plane = wv.getPlane();
-			Player me = client.getLocalPlayer();
-			if (me != null && me.getWorldLocation() != null)
-			{
-				WorldPoint wp = me.getWorldLocation();
-				sb.append("player@").append(wp.getX()).append(",").append(wp.getY())
-					.append(" tileH=").append(tileHeightAt(wv, wp, plane)).append(";");
-			}
 			for (com.creatorskit.Character ch : creators.getCharacters())
 			{
 				if (ch == null || ch.getName() == null)
@@ -2664,8 +2661,13 @@ public class HeadlessCapturePlugin extends Plugin
 			log.warn("Headless capture actorz: tick={} sceneSec={} {}",
 				tick, sceneSec, actorTerrainReport());
 		}
-		catch (Exception actorEx)
+		catch (Throwable actorEx)
 		{
+			// Observability must never wedge a capture: RuneLite
+			// asserts some reads (e.g. Actor.getWorldLocation) with
+			// AssertionError ("must be called on client thread"), which
+			// catch (Exception) misses and which killed the capture
+			// thread mid-warmup once. Log and continue.
 			log.warn("Headless capture actorz unreadable: {}", actorEx.toString());
 		}
 		if (options.settleMs > 0)
