@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import javax.imageio.ImageIO;
 import javax.swing.SwingUtilities;
 import net.runelite.api.Client;
+import net.runelite.api.CollisionData;
 import net.runelite.api.CollisionDataFlag;
 import net.runelite.api.DecorativeObject;
 import net.runelite.api.GameObject;
@@ -2000,27 +2001,25 @@ public class HeadlessCapturePlugin extends Plugin
 			client.getCameraX(), client.getCameraY());
 		int sx = camLp.getSceneX();
 		int sy = camLp.getSceneY();
-		// Burial check (pv2 teaser): the camera fails only when a model
-		// on its own tile reaches ABOVE it. Collision flags alone
-		// false-positive (a camera parked high above a low garden wall
-		// renders clean frames); only tops vs the camera decide.
-		Tile[][][] camTiles =
-			client.getTopLevelWorldView().getScene().getTiles();
-		if (camTiles != null && plane >= 0 && plane < camTiles.length
-			&& sx >= 0 && sy >= 0 && sx < camTiles[plane].length
-			&& sy < camTiles[plane][sx].length
-			&& camTiles[plane][sx][sy] != null)
+		// Solid-ground check (pv2 021 fix 6): the camera fails on a
+		// collision-blocked tile (inside a wall/trunk/column mass).
+		// Canopy/foliage tiles carry no collision and pass — near-plane
+		// clipping removes them, which clean frames confirm — while the
+		// cone below owns everything past the camera tile. Known limit:
+		// a camera parked high above a LOW wall tile still trips this
+		// (e.g. teaser home (22,5)); keep camera tiles off wall lines.
+		CollisionData[] maps = client.getCollisionMaps();
+		if (maps != null && plane >= 0 && plane < maps.length
+			&& maps[plane] != null)
 		{
-			Tile camTile = camTiles[plane][sx][sy];
-			int top = objectTopDown(
-				client.getTopLevelWorldView().getTileHeight(
-					camLp.getX(), camLp.getY(), plane),
-				maxTileModelHeight(camTile));
-			if (top < client.getCameraZ())
+			int[][] flags = maps[plane].getFlags();
+			if (flags != null && sx >= 0 && sy >= 0
+				&& sx < flags.length && sy < flags[sx].length
+				&& cameraTileBlocked(flags[sx][sy]))
 			{
-				guardFail(lenient, "capture camera buried under scenery "
-					+ "top=" + top + " cameraDown=" + client.getCameraZ()
-					+ " at scene " + sx + "," + sy + " plane " + plane);
+				guardFail(lenient, "capture camera inside wall/object "
+					+ "at scene " + sx + "," + sy + " plane " + plane
+					+ " flags=0x" + Integer.toHexString(flags[sx][sy]));
 			}
 		}
 		int tileH = Perspective.getTileHeight(client, camLp, plane);
@@ -2043,15 +2042,17 @@ public class HeadlessCapturePlugin extends Plugin
 	}
 
 	/**
-	 * View-cone guard (pv2 teaser, 022): no scenery object in a 3-wide
-	 * swath around the camera-to-focal segment may pierce the sight line,
-	 * and no live (non-hidden) NPC/player may stand on one. Runs per
-	 * frame from checkCameraClear so the whole orbit arc is covered;
-	 * fails naming the scene tile (or logs it in lenient probe mode)
-	 * instead of shipping an occlusion. Geometry is height-down local
-	 * units; collision flags are NOT consulted (a low fence blocks
-	 * movement but never the sight from a 4-tile-high camera, while a
-	 * collision-less bush engulfs it — only tops vs the line decide).
+	 * View-cone guard (pv2 teaser, 022): no world-owned scenery top past
+	 * the camera tile in a 3-wide swath around the camera-to-focal
+	 * segment may pierce the sight line, and no live (non-hidden)
+	 * NPC/player may stand on one. Runs per frame from checkCameraClear
+	 * so the whole orbit arc is covered; fails naming the scene tile (or
+	 * logs it in lenient probe mode) instead of shipping an occlusion.
+	 * Geometry is height-down local units; collision flags are NOT
+	 * consulted here (a low fence blocks movement but never the sight
+	 * from a 4-tile-high camera, while a collision-less bush engulfs it
+	 * — only tops vs the line decide). The camera tile itself belongs to
+	 * the solid-ground check above.
 	 */
 	private void checkViewConeClear(boolean lenient)
 	{
@@ -2099,6 +2100,13 @@ public class HeadlessCapturePlugin extends Plugin
 			int x = t[0];
 			int y = t[1];
 			int key = (x << 16) | (y & 0xFFFF);
+			if (x == camLp.getSceneX() && y == camLp.getSceneY())
+			{
+				// The camera tile belongs to the solid-ground check
+				// above: near-plane clipping removes sub-tile foliage
+				// there, which clean frames confirm.
+				continue;
+			}
 			if (liveActors.contains(key))
 			{
 				guardFail(lenient, "non-scene actor in view cone at scene "
