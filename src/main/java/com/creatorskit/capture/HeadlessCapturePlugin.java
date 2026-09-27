@@ -27,7 +27,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import javax.imageio.ImageIO;
 import javax.swing.SwingUtilities;
 import net.runelite.api.Client;
+import net.runelite.api.CollisionData;
+import net.runelite.api.CollisionDataFlag;
 import net.runelite.api.GameState;
+import net.runelite.api.Perspective;
 import net.runelite.api.PlayerComposition;
 import net.runelite.api.ScriptID;
 import net.runelite.api.coords.LocalPoint;
@@ -1663,6 +1666,69 @@ public class HeadlessCapturePlugin extends Plugin
 	 * every frame of a job shares one converged pose instead of catching
 	 * mid-ease jitter.
 	 */
+	/**
+	 * True when collision flags mark a wall/object sight-blocker tile.
+	 * Pure for unit tests.
+	 */
+	static boolean cameraTileBlocked(int flags)
+	{
+		return (flags & (CollisionDataFlag.BLOCK_MOVEMENT_FULL
+			| CollisionDataFlag.BLOCK_LINE_OF_SIGHT_FULL)) != 0;
+	}
+
+	/**
+	 * True when the camera height sits below the terrain (plus a small
+	 * tolerance). Both inputs are height-down local units, so a larger
+	 * camera value is a lower camera. Pure for unit tests.
+	 */
+	static boolean cameraBelowTerrain(int cameraDown, int tileDown)
+	{
+		return cameraDown > tileDown + 32;
+	}
+
+	/**
+	 * Terrain/wall clearance for the converged capture camera (pv2 021
+	 * fix 6). Reads the LIVE collision map and tile height at the
+	 * camera's ground tile and fails loudly with the tile instead of
+	 * rendering void frames. Roofs/overhangs are not detectable from
+	 * these APIs and stay an eye-check.
+	 */
+	private void checkCameraClear()
+	{
+		int plane = client.getTopLevelWorldView().getPlane();
+		LocalPoint camLp = new LocalPoint(
+			client.getCameraX(), client.getCameraY());
+		int sx = camLp.getSceneX();
+		int sy = camLp.getSceneY();
+		CollisionData[] maps = client.getCollisionMaps();
+		if (maps != null && plane >= 0 && plane < maps.length
+			&& maps[plane] != null)
+		{
+			int[][] flags = maps[plane].getFlags();
+			if (flags != null && sx >= 0 && sy >= 0
+				&& sx < flags.length && sy < flags[sx].length)
+			{
+				int f = flags[sx][sy];
+				if (cameraTileBlocked(f))
+				{
+					throw new IllegalStateException(
+						"capture camera inside wall/object at scene "
+						+ sx + "," + sy + " plane " + plane
+						+ " flags=0x" + Integer.toHexString(f));
+				}
+			}
+		}
+		int tileH = Perspective.getTileHeight(client, camLp, plane);
+		if (cameraBelowTerrain(client.getCameraZ(), tileH))
+		{
+			throw new IllegalStateException(
+				"capture camera below terrain at scene "
+				+ sx + "," + sy + " plane " + plane
+				+ " cameraDown=" + client.getCameraZ()
+				+ " tileDown=" + tileH);
+		}
+	}
+
 	private void convergeCamera() throws Exception
 	{
 		if (lastAimYaw < 0)
@@ -1879,6 +1945,12 @@ public class HeadlessCapturePlugin extends Plugin
 		{
 			applyOrbitYaw(options, sceneSec, rangeStartSec, rangeEndSec);
 		}
+		// Terrain/wall clearance (pv2 021 fix 6): the converged camera
+		// for THIS frame must not sit inside a wall/object or below
+		// the terrain, or the frame renders void. Checked per frame
+		// so the whole orbit arc is covered, failing loudly with the
+		// tile instead of shipping black frames.
+		checkCameraClear();
 		if (options.settleMs > 0)
 		{
 			Thread.sleep(options.settleMs);
