@@ -4,12 +4,14 @@ import net.runelite.api.CollisionDataFlag;
 import net.runelite.api.Model;
 import net.runelite.api.NPC;
 import net.runelite.api.Renderable;
+import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.callback.RenderCallbackManager;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertNotNull;
 
 /**
  * Capture-camera clearance guard (pv2 021 fix 6): the converged camera
@@ -298,6 +300,42 @@ public class CameraGuardTest
 			HeadlessCapturePlugin.class.getDeclaredField(field);
 		f.setAccessible(true);
 		return f.getInt(plugin);
+	}
+
+	@Test
+	public void actorTerrainFlagsBuriedObject()
+	{
+		// 036 diagnostic: an object rendered below its anchor terrain
+		// is buried (terrain covers the model).
+		String line = HeadlessCapturePlugin.formatActorTerrain(
+			"Vorkath", new WorldPoint(2271, 4053, 0), 0, 128, 0, 128);
+		assertTrue(line.contains("BURIED"));
+	}
+
+	@Test
+	public void actorTerrainPassesSeatedObject()
+	{
+		String line = HeadlessCapturePlugin.formatActorTerrain(
+			"Hero", new WorldPoint(2269, 4056, 0), 128, 128, 128, 128);
+		assertFalse(line.contains("BURIED"));
+		assertFalse(line.contains("SLOPED"));
+	}
+
+	@Test
+	public void actorTerrainFlagsSlopeSpread()
+	{
+		String line = HeadlessCapturePlugin.formatActorTerrain(
+			"Vorkath", new WorldPoint(2271, 4053, 0), 200, 128, 100, 200);
+		assertTrue(line.contains("SLOPED"));
+	}
+
+	@Test
+	public void actorTerrainReportNeedsLiveClient()
+	{
+		// Bare instance (null injected client): reports unavailable
+		// instead of throwing.
+		HeadlessCapturePlugin plugin = new HeadlessCapturePlugin();
+		assertNotNull(plugin.actorTerrainReport());
 	}
 
 	@Test

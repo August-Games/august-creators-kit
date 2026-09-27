@@ -1,5 +1,6 @@
 package com.creatorskit.capture;
 
+import com.creatorskit.CKObject;
 import com.creatorskit.CreatorsPlugin;
 import com.creatorskit.models.CustomModelComp;
 import com.creatorskit.models.CustomModelType;
@@ -45,6 +46,7 @@ import net.runelite.client.callback.RenderCallbackManager;
 import net.runelite.api.Perspective;
 import net.runelite.api.PlayerComposition;
 import net.runelite.api.ScriptID;
+import net.runelite.api.WorldView;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.gameval.VarClientID;
@@ -1593,6 +1595,120 @@ public class HeadlessCapturePlugin extends Plugin
 	}
 
 	/**
+	 * Actor terrain-fit report (pv2 036 diagnostic): one `name@x,y
+	 * objZ=.. centreH=.. ring[lo,hi]` fragment per staged character,
+	 * plus the local player's tile height for context. All reads are
+	 * guarded: a bare instance (unit tests) reports unavailable instead
+	 * of throwing.
+	 */
+	String actorTerrainReport()
+	{
+		StringBuilder sb = new StringBuilder();
+		try
+		{
+			WorldView wv = client.getTopLevelWorldView();
+			int plane = wv.getPlane();
+			Player me = client.getLocalPlayer();
+			if (me != null && me.getWorldLocation() != null)
+			{
+				WorldPoint wp = me.getWorldLocation();
+				sb.append("player@").append(wp.getX()).append(",").append(wp.getY())
+					.append(" tileH=").append(tileHeightAt(wv, wp, plane)).append(";");
+			}
+			for (com.creatorskit.Character ch : creators.getCharacters())
+			{
+				if (ch == null || ch.getName() == null)
+				{
+					continue;
+				}
+				try
+				{
+					CKObject obj = ch.getCkObject();
+					WorldPoint anchor = ch.getNonInstancedPoint();
+					if (obj == null || anchor == null)
+					{
+						sb.append(ch.getName()).append("=no-object;");
+						continue;
+					}
+					int objZ = obj.getZ();
+					int centreH = tileHeightAt(wv, anchor, plane);
+					int minH = centreH;
+					int maxH = centreH;
+					for (int dx = -3; dx <= 3; dx++)
+					{
+						for (int dy = -3; dy <= 3; dy++)
+						{
+							if (dx == 0 && dy == 0)
+							{
+								continue;
+							}
+							int h = tileHeightAt(wv, new WorldPoint(
+								anchor.getX() + dx, anchor.getY() + dy, plane), plane);
+							if (h == Integer.MIN_VALUE)
+							{
+								continue;
+							}
+							if (minH == Integer.MIN_VALUE || h < minH)
+							{
+								minH = h;
+							}
+							if (maxH == Integer.MIN_VALUE || h > maxH)
+							{
+								maxH = h;
+							}
+						}
+					}
+					sb.append(formatActorTerrain(
+						ch.getName(), anchor, objZ, centreH, minH, maxH)).append(";");
+				}
+				catch (Exception inner)
+				{
+					sb.append(ch.getName()).append("=?;");
+				}
+			}
+		}
+		catch (Exception e)
+		{
+			return "unavailable(" + e.toString() + ")";
+		}
+		return sb.toString();
+	}
+
+	private int tileHeightAt(WorldView wv, WorldPoint wp, int plane)
+	{
+		try
+		{
+			LocalPoint lp = LocalPoint.fromWorld(wv, wp);
+			if (lp == null)
+			{
+				return Integer.MIN_VALUE;
+			}
+			return Perspective.getTileHeight(client, lp, plane);
+		}
+		catch (Exception e)
+		{
+			return Integer.MIN_VALUE;
+		}
+	}
+
+	/**
+	 * Pure actor-terrain verdict fragment (unit-tested): flags an object
+	 * rendered below its anchor terrain (BURIED) and relief over a tile
+	 * that spans more than a quarter tile of height (SLOPED).
+	 */
+	static String formatActorTerrain(String name, WorldPoint anchor, int objZ,
+		int centreH, int minH, int maxH)
+	{
+		boolean buried = centreH != Integer.MIN_VALUE && objZ < centreH;
+		boolean sloped = minH != Integer.MIN_VALUE && maxH != Integer.MIN_VALUE
+			&& (maxH - minH) > 32;
+		return name + "@" + anchor.getX() + "," + anchor.getY()
+			+ " objZ=" + objZ + " centreH=" + centreH
+			+ " ring[" + minH + "," + maxH + "]"
+			+ (buried ? " BURIED" : "") + (sloped ? " SLOPED" : "");
+	}
+
+	/**
 	 * Aim-time focal tile in scene coords (pv2 teaser: view-cone guard).
 	 * Set by aimCameraAtActors, read per frame by checkCameraClear so the
 	 * whole orbit arc is covered. Integer.MIN_VALUE while unset.
@@ -2537,6 +2653,20 @@ public class HeadlessCapturePlugin extends Plugin
 		catch (Exception poseEx)
 		{
 			log.warn("Headless capture framepose unreadable: {}", poseEx.toString());
+		}
+		// Actor terrain fit (pv2 036 diagnostic): each staged actor's
+		// rendered Z against the terrain height at its anchor tile and
+		// over a 7x7 ring (size-7 footprint). An object placed below the
+		// terrain surface renders buried: only the parts poking above
+		// ground show.
+		try
+		{
+			log.warn("Headless capture actorz: tick={} sceneSec={} {}",
+				tick, sceneSec, actorTerrainReport());
+		}
+		catch (Exception actorEx)
+		{
+			log.warn("Headless capture actorz unreadable: {}", actorEx.toString());
 		}
 		if (options.settleMs > 0)
 		{
