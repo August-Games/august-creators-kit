@@ -56,10 +56,11 @@ public class CameraGuardTest
 	@Test
 	public void swathCoversEndpointsAndNeighbours()
 	{
-		java.util.List<int[]> swath = HeadlessCapturePlugin.swathTiles(50, 50, 56, 50);
+		java.util.List<int[]> swath = HeadlessCapturePlugin.swathTiles(50, 50, 56, 50, 0.27);
 		boolean start = false;
 		boolean end = false;
-		boolean beside = false;
+		boolean besideFar = false;
+		boolean besideNear = false;
 		for (int[] t : swath)
 		{
 			if (t[0] == 50 && t[1] == 50)
@@ -70,21 +71,53 @@ public class CameraGuardTest
 			{
 				end = true;
 			}
-			if (t[0] == 53 && t[1] == 51)
+			if (t[0] == 55 && t[1] == 51)
 			{
-				beside = true;
+				besideFar = true;
+			}
+			if (t[0] == 51 && t[1] == 51)
+			{
+				besideNear = true;
 			}
 		}
 		assertTrue(start);
 		assertTrue(end);
-		assertTrue(beside);
+		assertTrue(besideFar);
+		// Frustum narrows to the lens: one tile out the ring has
+		// not opened yet (neighbour centres reach (53,51) via union,
+		// but nothing reaches (51,51)).
+		assertTrue(!besideNear);
 	}
 
 	@Test
-	public void swathDegenerateIsOneRing()
+	public void swathDegenerateIsCentreOnly()
 	{
-		java.util.List<int[]> swath = HeadlessCapturePlugin.swathTiles(7, 7, 7, 7);
-		assertTrue(swath.size() == 9);
+		java.util.List<int[]> swath = HeadlessCapturePlugin.swathTiles(7, 7, 7, 7, 0.27);
+		assertTrue(swath.size() == 1);
+	}
+
+	@Test
+	public void swathExcludesOffAxisNearCameraTile()
+	{
+		// Home-corner regression: the tree one tile out from the lens
+		// sits off the sight line and never renders, while an on-axis
+		// tile five tiles out stays covered.
+		java.util.List<int[]> swath = HeadlessCapturePlugin.swathTiles(63, 55, 71, 58, 0.266);
+		boolean nearOffAxis = false;
+		boolean farOnAxis = false;
+		for (int[] t : swath)
+		{
+			if (t[0] == 64 && t[1] == 56)
+			{
+				nearOffAxis = true;
+			}
+			if (t[0] == 67 && t[1] == 57)
+			{
+				farOnAxis = true;
+			}
+		}
+		assertTrue(!nearOffAxis);
+		assertTrue(farOnAxis);
 	}
 
 	@Test

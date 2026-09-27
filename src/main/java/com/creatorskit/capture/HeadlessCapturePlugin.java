@@ -1784,8 +1784,15 @@ public class HeadlessCapturePlugin extends Plugin
 	 * walk order, so beside-axis occluders (the home white column) fail as
 	 * well as on-axis ones.
 	 */
-	static List<int[]> swathTiles(int x0, int y0, int x1, int y1)
+	static List<int[]> swathTiles(int x0, int y0, int x1, int y1, double tanHalfWidth)
 	{
+		// Frustum-proportional width: a real view frustum narrows to the
+		// lens, so near-camera tiles only contribute the centre line
+		// while far tiles keep a wide ring. A constant-width swath
+		// false-positives on off-axis canopies hugging the camera
+		// (home corner tree at one tile out, never in frame). The
+		// horizontal half-angle over-approximates the vertical one, so
+		// the ring stays conservative where canopies intrude from top.
 		Set<Integer> seen = new LinkedHashSet<>();
 		List<int[]> out = new ArrayList<>();
 		int steps = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)) * 2;
@@ -1794,9 +1801,10 @@ public class HeadlessCapturePlugin extends Plugin
 			double t = steps == 0 ? 0.0 : (double) i / steps;
 			int px = (int) Math.round(x0 + (x1 - x0) * t);
 			int py = (int) Math.round(y0 + (y1 - y0) * t);
-			for (int dx = -1; dx <= 1; dx++)
+			int w = (int) (Math.hypot(px - x0, py - y0) * tanHalfWidth);
+			for (int dx = -w; dx <= w; dx++)
 			{
-				for (int dy = -1; dy <= 1; dy++)
+				for (int dy = -w; dy <= w; dy++)
 				{
 					int key = ((px + dx) << 16) | ((py + dy) & 0xFFFF);
 					if (seen.add(key))
@@ -2065,8 +2073,26 @@ public class HeadlessCapturePlugin extends Plugin
 		int camY = client.getCameraY();
 		int camDown = client.getCameraZ();
 		LocalPoint camLp = new LocalPoint(camX, camY);
+		// Live frustum half-width: (viewport / 2) / scale is tan of the
+		// horizontal half-angle; the vertical truth is narrower, so this
+		// over-approximates and stays on the refusing side.
+		double tanHalfWidth = 0.3;
+		try
+		{
+			int scale = client.getScale();
+			int viewW = client.getViewportWidth();
+			if (scale > 0 && viewW > 0)
+			{
+				tanHalfWidth = (viewW / 2.0) / scale;
+			}
+		}
+		catch (RuntimeException frustumEx)
+		{
+			// Keep the default.
+		}
 		List<int[]> swath = swathTiles(
-			camLp.getSceneX(), camLp.getSceneY(), focalSceneX, focalSceneY);
+			camLp.getSceneX(), camLp.getSceneY(), focalSceneX, focalSceneY,
+			tanHalfWidth);
 		// Live-actor presence only means visibility when nothing hides
 		// them: with ambient hiding on, every NPC/non-local player is
 		// refused at the scene gate by construction (and the frames prove
