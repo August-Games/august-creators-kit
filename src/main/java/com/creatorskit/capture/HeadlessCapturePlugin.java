@@ -40,6 +40,8 @@ import net.runelite.api.Player;
 import net.runelite.api.Renderable;
 import net.runelite.api.Tile;
 import net.runelite.api.WallObject;
+import net.runelite.client.callback.RenderCallback;
+import net.runelite.client.callback.RenderCallbackManager;
 import net.runelite.api.Perspective;
 import net.runelite.api.PlayerComposition;
 import net.runelite.api.ScriptID;
@@ -86,6 +88,7 @@ public class HeadlessCapturePlugin extends Plugin
 	@Inject private DrawManager drawManager;
 	@Inject private CreatorsPlugin creators;
 	@Inject private PluginManager pluginManager;
+	@Inject private RenderCallbackManager renderCallbackManager;
 
 	private volatile Thread worker;
 
@@ -1572,8 +1575,6 @@ public class HeadlessCapturePlugin extends Plugin
 
 	private int focalSceneY = Integer.MIN_VALUE;
 
-	private int hideLogCounter = 0;
-
 	/**
 	 * View-cone scenery tiles already reported this job (pv2 teaser):
 	 * the cone guard runs per frame, so without this the same object
@@ -1665,7 +1666,6 @@ public class HeadlessCapturePlugin extends Plugin
 					focalSceneX = lp.getSceneX();
 					focalSceneY = lp.getSceneY();
 					coneSceneryLogged.clear();
-					hideLogCounter = 0;
 				}
 				lastAimYaw = yaw;
 				lastAimPitch = pitch;
@@ -1721,46 +1721,47 @@ public class HeadlessCapturePlugin extends Plugin
 	/**
 	 * Ambient-entity hiding for per-shot capture (pv2 teaser, 022).
 	 * Each shot's capture job stages ONLY its subject actors as kit
-	 * characters; world NPCs and other players sharing the area (the
-	 * Warriors' Guild cyclopes, field goblins) would otherwise wander
-	 * into frame. Marks every real NPC and non-local player dead every
-	 * frame on the client thread: dead actors are skipped by the scene
-	 * draw, while kit characters (custom comps, not NPC/Player objects)
-	 * render untouched. The local player stays visible: the compile-time
+	 * characters (RuneLiteObjects, not NPC/Player instances); world NPCs
+	 * and other players sharing the area (the Warriors' Guild cyclopes,
+	 * field goblins) would otherwise wander into frame. Registers a
+	 * RenderCallback that refuses every NPC and every non-local player
+	 * before it joins the scene — the same mechanism as the client's
+	 * EntityHider, so spotanims, projectiles, TileObjects and the kit's
+	 * own RuneLiteObjects (the staged pair, the flurry gfx) draw
+	 * untouched. The local player stays visible: the compile-time
 	 * staging audit already projects it fully outside the crop rect.
-	 * Must run on the client thread (caller in seekAndCapture ensures).
+	 * (Actor.setDead does NOT suppress rendering — death state only —
+	 * so a flag-based hide silently no-ops; the probe proved it.)
 	 */
+	private final RenderCallback ambientHideCallback = new RenderCallback()
+	{
+		@Override
+		public boolean addEntity(Renderable renderable, boolean ui)
+		{
+			if (renderable instanceof NPC)
+			{
+				return false;
+			}
+			if (renderable instanceof Player
+				&& renderable != client.getLocalPlayer())
+			{
+				return false;
+			}
+			return true;
+		}
+	};
+
+	private boolean ambientHideRegistered = false;
+
 	private void hideAmbientEntities(CaptureOptions options)
 	{
-		if (!options.hideEntities)
+		if (!options.hideEntities || ambientHideRegistered)
 		{
 			return;
 		}
-		Player local = client.getLocalPlayer();
-		int npcs = 0;
-		for (NPC npc : client.getNpcs())
-		{
-			if (npc != null && !npc.isDead())
-			{
-				npc.setDead(true);
-				npcs++;
-			}
-		}
-		int players = 0;
-		for (Player p : client.getPlayers())
-		{
-			if (p != null && p != local && !p.isDead())
-			{
-				p.setDead(true);
-				players++;
-			}
-		}
-		if (npcs + players > 0 || hideLogCounter % 60 == 0)
-		{
-			log.warn("Headless capture ambient hide: {} NPCs + {} players newly hidden",
-				npcs, players);
-		}
-		hideLogCounter++;
+		renderCallbackManager.register(ambientHideCallback);
+		ambientHideRegistered = true;
+		log.warn("Headless capture ambient hide on: NPCs + non-local players suppressed");
 	}
 
 	/**
@@ -1810,6 +1811,19 @@ public class HeadlessCapturePlugin extends Plugin
 	static boolean tallScenery(int modelHeight)
 	{
 		return modelHeight >= TALL_SCENERY_MIN_HEIGHT;
+	}
+
+	/**
+	 * True when a cone-scan object id belongs to the kit, not the world.
+	 * Kit characters stage as RuneLiteObjects and transient gfx carries
+	 * no static id either; both report negative ids and must never trip
+	 * the guard (the staged pair stands at the focal). Static occluders
+	 * (walls, columns, trees, fences) always carry real ids. Pure for
+	 * unit tests.
+	 */
+	static boolean skipConeObject(int id)
+	{
+		return id < 0;
 	}
 
 	static int maxModelHeight(Renderable... renderables)
@@ -1907,22 +1921,31 @@ public class HeadlessCapturePlugin extends Plugin
 			client.getCameraX(), client.getCameraY());
 		List<int[]> swath = swathTiles(
 			camLp.getSceneX(), camLp.getSceneY(), focalSceneX, focalSceneY);
+		// Live-actor presence only means visibility when nothing hides
+		// them: with ambient hiding on, every NPC/non-local player is
+		// refused at the scene gate by construction (and the frames prove
+		// it), so listing them here would false-positive on every shot.
+		// The local player is audited separately (compile-time rule 3).
 		Set<Integer> liveActors = new HashSet<>();
-		for (NPC npc : client.getNpcs())
+		if (!ambientHideRegistered)
 		{
-			if (npc != null && !npc.isDead()
-				&& npc.getLocalLocation() != null)
+			for (NPC npc : client.getNpcs())
 			{
-				liveActors.add((npc.getLocalLocation().getSceneX() << 16)
-					| (npc.getLocalLocation().getSceneY() & 0xFFFF));
+				if (npc != null && !npc.isDead()
+					&& npc.getLocalLocation() != null)
+				{
+					liveActors.add((npc.getLocalLocation().getSceneX() << 16)
+						| (npc.getLocalLocation().getSceneY() & 0xFFFF));
+				}
 			}
-		}
-		for (Player p : client.getPlayers())
-		{
-			if (p != null && !p.isDead() && p.getLocalLocation() != null)
+			for (Player p : client.getPlayers())
 			{
-				liveActors.add((p.getLocalLocation().getSceneX() << 16)
-					| (p.getLocalLocation().getSceneY() & 0xFFFF));
+				if (p != null && !p.isDead() && p != client.getLocalPlayer()
+					&& p.getLocalLocation() != null)
+				{
+					liveActors.add((p.getLocalLocation().getSceneX() << 16)
+						| (p.getLocalLocation().getSceneY() & 0xFFFF));
+				}
 			}
 		}
 		Tile[][][] tiles = client.getTopLevelWorldView().getScene().getTiles();
@@ -1994,6 +2017,10 @@ public class HeadlessCapturePlugin extends Plugin
 							h = dh;
 							id = decor.getId();
 						}
+					}
+					if (skipConeObject(id))
+					{
+						continue;
 					}
 					if (h > 0 && coneSceneryLogged.add(key))
 					{

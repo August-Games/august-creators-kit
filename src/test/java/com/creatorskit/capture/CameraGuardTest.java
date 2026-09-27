@@ -103,4 +103,12 @@ public class CameraGuardTest
 		assertTrue(HeadlessCapturePlugin.maxModelHeight() == 0);
 		assertTrue(HeadlessCapturePlugin.maxModelHeight(null, null) == 0);
 	}
+
+	@Test
+	public void kitOwnedObjectsSkipCone()
+	{
+		assertTrue(HeadlessCapturePlugin.skipConeObject(-1));
+		assertFalse(HeadlessCapturePlugin.skipConeObject(0));
+		assertFalse(HeadlessCapturePlugin.skipConeObject(218));
+	}
 }
