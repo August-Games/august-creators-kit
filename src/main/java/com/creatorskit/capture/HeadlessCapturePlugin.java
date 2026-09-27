@@ -2124,9 +2124,21 @@ public class HeadlessCapturePlugin extends Plugin
 			{
 				continue;
 			}
+			if (x < 0 || y < 0 || x >= 104 || y >= 104)
+			{
+				continue;
+			}
 			int id = topTileModelId(tile);
-			int tileH = client.getTopLevelWorldView().getTileHeight(
-				x * 128 + 64, y * 128 + 64, plane);
+			int tileH;
+			try
+			{
+				tileH = client.getTopLevelWorldView().getTileHeight(
+					x * 128 + 64, y * 128 + 64, plane);
+			}
+			catch (RuntimeException heightEx)
+			{
+				continue;
+			}
 			int top = objectTopDown(tileH, h);
 			int sight = sightHeightDown(camX, camY, camDown,
 				focalLocalX, focalLocalY, focalDown,
