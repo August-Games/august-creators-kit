@@ -63,6 +63,15 @@ public class Character
     private CKObject spotAnim1;
     private CKObject spotAnim2;
     private int targetOrientation;
+    /**
+     * Footprint-centre offset in local units (1/128th tile), applied to
+     * every render placement. A size-N NPC's model is centred (N-1)*64
+     * local units NE of its SW anchor tile; the kit stages models at the
+     * anchor, so without this multi-tile NPCs render off-footprint.
+     * Headless capture sets it from the cache definition (013); 0 keeps
+     * size-1 actors exactly where staged.
+     */
+    private int npcCentreOffsetLocal;
 
     @Override
     public String toString()
@@ -352,6 +361,10 @@ public class Character
 
     public void updateLocation(LocalPoint lp, int plane)
     {
+        if (lp != null && npcCentreOffsetLocal != 0)
+        {
+            lp = lp.plus(npcCentreOffsetLocal, npcCentreOffsetLocal);
+        }
         if (ckObject != null)
         {
             ckObject.setLocation(lp, plane);

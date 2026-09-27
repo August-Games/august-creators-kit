@@ -7,8 +7,10 @@ import com.creatorskit.models.DataFinder;
 import com.creatorskit.models.ModelStats;
 import com.creatorskit.models.datatypes.NpcDefinition;
 import com.creatorskit.saves.CharacterSave;
+import com.creatorskit.saves.ModelKeyFrameSave;
 import com.creatorskit.saves.SetupSave;
 import com.creatorskit.swing.timesheet.keyframe.subtypes.AnimationKeyFrame;
+import com.creatorskit.swing.timesheet.keyframe.subtypes.MovementKeyFrame;
 import com.google.inject.Inject;
 import java.awt.Image;
 import java.awt.image.BufferedImage;
@@ -378,6 +380,7 @@ public class HeadlessCapturePlugin extends Plugin
 			// (requested or not), so geometry-less comps can never slip through.
 			resolveComps(save);
 			defaultNpcIdlePoses(save);
+			defaultNpcSizes(save);
 			List<String> blockers = new ArrayList<>();
 			CustomModelComp[] comps = save.getComps();
 			if (comps != null)
@@ -440,6 +443,7 @@ public class HeadlessCapturePlugin extends Plugin
 			log.warn("Headless capture spawned {} characters: {}",
 				spawned.size(), spawned);
 			reportSpawnHealth();
+			applyNpcCentreOffsets(save);
 			// A load that silently creates nothing must fail loudly, not
 			// write a successful empty capture.
 			if (staged > 0 && spawned.size() < staged)
@@ -629,6 +633,179 @@ public class HeadlessCapturePlugin extends Plugin
 			{
 				log.warn("Headless capture defaulted {} to stand anim {}",
 					ch.getName(), def.getStandingAnimation());
+			}
+		}
+	}
+
+	/**
+	 * Whole-tile part of the footprint-centre shift for a size-N NPC.
+	 * The model is centred (N-1)/2 tiles NE of its SW anchor; the save
+	 * (tile ints) carries the floored part, the live character the exact
+	 * local-unit remainder via {@link #npcCentreRemainderLocal}.
+	 */
+	static int npcCentreShiftTiles(int size)
+	{
+		return (size - 1) / 2;
+	}
+
+	/**
+	 * Exact local-unit remainder (1/128th tile) of the footprint-centre
+	 * shift after {@link #npcCentreShiftTiles}: (N-1)*64 minus the shifted
+	 * whole tiles back in local units. Zero for odd sizes; 64 (half tile)
+	 * for size 2, etc.
+	 */
+	static int npcCentreRemainderLocal(int size)
+	{
+		return (size - 1) * 64 - npcCentreShiftTiles(size) * 128;
+	}
+
+	/**
+	 * Stamps one NPC character save with its cache size: object radius
+	 * (culling/clickbox for the correctly placed big model) and the
+	 * whole-tile footprint-centre shift on the staged anchor and movement
+	 * path. Pure save mutation (unit-tested); the sub-tile remainder rides
+	 * the live character via {@link #applyNpcCentreOffsets}.
+	 */
+	static void applyNpcSize(CharacterSave ch, int size)
+	{
+		ch.setRadius(size);
+		int shift = npcCentreShiftTiles(size);
+		if (shift != 0)
+		{
+			WorldPoint p = ch.getNonInstancedPoint();
+			if (p != null)
+			{
+				ch.setNonInstancedPoint(
+					new WorldPoint(p.getX() + shift, p.getY() + shift,
+						p.getPlane()));
+			}
+			MovementKeyFrame[] moves = ch.getMovementKeyFrames();
+			if (moves != null)
+			{
+				for (MovementKeyFrame mkf : moves)
+				{
+					if (mkf == null || mkf.getPath() == null)
+					{
+						continue;
+					}
+					for (int[] step : mkf.getPath())
+					{
+						if (step != null && step.length >= 2)
+						{
+							step[0] += shift;
+							step[1] += shift;
+						}
+					}
+				}
+			}
+		}
+		ModelKeyFrameSave[] models = ch.getModelKeyFrameSaves();
+		if (models != null)
+		{
+			ModelKeyFrameSave[] grown = new ModelKeyFrameSave[models.length];
+			for (int i = 0; i < models.length; i++)
+			{
+				ModelKeyFrameSave kf = models[i];
+				grown[i] = kf == null ? null : new ModelKeyFrameSave(
+					kf.getTick(), kf.isUseCustomModel(), kf.getModelId(),
+					kf.getCustomModel(), size);
+			}
+			ch.setModelKeyFrameSaves(grown);
+		}
+	}
+
+	/**
+	 * Gives every NPC character its cache footprint: radius + whole-tile
+	 * centre shift on the save (see {@link #applyNpcSize}). A size-N NPC
+	 * occupies NxN tiles from its SW anchor with the model centred on the
+	 * footprint middle; the kit stages models at the anchor tile, so
+	 * without this e.g. size-7 Vorkath renders 3 tiles SW and spills onto
+	 * the neighbouring player tile. Size-1 NPCs are untouched.
+	 */
+	private void defaultNpcSizes(SetupSave save)
+	{
+		CustomModelComp[] comps = save.getComps();
+		if (comps == null)
+		{
+			return;
+		}
+		DataFinder dataFinder = creators.getDataFinder();
+		if (dataFinder == null)
+		{
+			return;
+		}
+		for (CharacterSave ch : SceneResolver.allCharacterSaves(save))
+		{
+			if (ch == null || ch.getCompId() < 0 || ch.getCompId() >= comps.length)
+			{
+				continue;
+			}
+			CustomModelComp comp = comps[ch.getCompId()];
+			if (comp == null || comp.getType() != CustomModelType.CACHE_NPC || comp.getNpcId() == null)
+			{
+				continue;
+			}
+			NpcDefinition def = dataFinder.findNpcDefinition(comp.getNpcId());
+			if (def == null || def.getSize() <= 1)
+			{
+				continue;
+			}
+			applyNpcSize(ch, def.getSize());
+			log.warn("Headless capture sized {} to {} (centre shift {} tile(s))",
+				ch.getName(), def.getSize(), npcCentreShiftTiles(def.getSize()));
+		}
+	}
+
+	/**
+	 * Sets the exact sub-tile footprint-centre remainder on each spawned
+	 * NPC character (see {@link #npcCentreRemainderLocal}); the save-level
+	 * whole-tile shift in {@link #defaultNpcSizes} cannot represent the
+	 * half tile of even sizes. Matched by character name; missing live
+	 * characters fail the spawn census above, so silence here is safe.
+	 */
+	private void applyNpcCentreOffsets(SetupSave save)
+	{
+		CustomModelComp[] comps = save.getComps();
+		if (comps == null)
+		{
+			return;
+		}
+		DataFinder dataFinder = creators.getDataFinder();
+		if (dataFinder == null)
+		{
+			return;
+		}
+		for (com.creatorskit.Character ch : creators.getCharacters())
+		{
+			if (ch == null || ch.getName() == null)
+			{
+				continue;
+			}
+			for (CharacterSave csv : SceneResolver.allCharacterSaves(save))
+			{
+				if (csv == null || !ch.getName().equals(csv.getName()))
+				{
+					continue;
+				}
+				if (csv.getCompId() < 0 || csv.getCompId() >= comps.length)
+				{
+					break;
+				}
+				CustomModelComp comp = comps[csv.getCompId()];
+				if (comp == null || comp.getType() != CustomModelType.CACHE_NPC || comp.getNpcId() == null)
+				{
+					break;
+				}
+				NpcDefinition def = dataFinder.findNpcDefinition(comp.getNpcId());
+				if (def == null || def.getSize() <= 1)
+				{
+					break;
+				}
+				int remainder = npcCentreRemainderLocal(def.getSize());
+				ch.setNpcCentreOffsetLocal(remainder);
+				log.warn("Headless capture centred {} (size {}): remainder {} local units",
+					ch.getName(), def.getSize(), remainder);
+				break;
 			}
 		}
 	}

@@ -488,6 +488,7 @@ public class CreatorsPanel extends PluginPanel
                 new CKObject(client),
                 null,
                 null,
+                0,
                 0);
 
         textField.addActionListener(e -> onNameTextFieldChanged(character));
