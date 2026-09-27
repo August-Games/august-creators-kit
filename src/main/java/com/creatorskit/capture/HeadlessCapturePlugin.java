@@ -1695,6 +1695,11 @@ public class HeadlessCapturePlugin extends Plugin
 	 */
 	private void checkCameraClear()
 	{
+		// Probe mode (wall-mapping renders): report but do not fail, so
+		// one render maps every candidate staging. Set by
+		// -Dck.capture.cameraGuardLenient=true (runner: PV_CAMERA_GUARD).
+		boolean lenient = Boolean.parseBoolean(
+			System.getProperty("ck.capture.cameraGuardLenient", "false"));
 		int plane = client.getTopLevelWorldView().getPlane();
 		LocalPoint camLp = new LocalPoint(
 			client.getCameraX(), client.getCameraY());
@@ -1711,21 +1716,35 @@ public class HeadlessCapturePlugin extends Plugin
 				int f = flags[sx][sy];
 				if (cameraTileBlocked(f))
 				{
-					throw new IllegalStateException(
-						"capture camera inside wall/object at scene "
+					String msg = "capture camera inside wall/object at scene "
 						+ sx + "," + sy + " plane " + plane
-						+ " flags=0x" + Integer.toHexString(f));
+						+ " flags=0x" + Integer.toHexString(f);
+					if (lenient)
+					{
+						log.error("Headless capture camera guard (lenient): {}", msg);
+					}
+					else
+					{
+						throw new IllegalStateException(msg);
+					}
 				}
 			}
 		}
 		int tileH = Perspective.getTileHeight(client, camLp, plane);
 		if (cameraBelowTerrain(client.getCameraZ(), tileH))
 		{
-			throw new IllegalStateException(
-				"capture camera below terrain at scene "
+			String msg = "capture camera below terrain at scene "
 				+ sx + "," + sy + " plane " + plane
 				+ " cameraDown=" + client.getCameraZ()
-				+ " tileDown=" + tileH);
+				+ " tileDown=" + tileH;
+			if (lenient)
+			{
+				log.error("Headless capture camera guard (lenient): {}", msg);
+			}
+			else
+			{
+				throw new IllegalStateException(msg);
+			}
 		}
 	}
 
@@ -1940,6 +1959,24 @@ public class HeadlessCapturePlugin extends Plugin
 			aimCameraAtActors(options);
 			convergeCamera();
 			cameraAimed = true;
+			try
+			{
+				// Post-converge pose (pv2 021): the aim-time pose is the
+				// stale spawn pose; only the converged pose calibrates
+				// the audit's zoom->distance map and viewport scale.
+				log.warn("Headless capture camera converged: yaw={} "
+					+ "pitch={} zoom={} x={} y={} z={} scale={} view={}x{}",
+					lastAimYaw, lastAimPitch, options.zoom,
+					client.getCameraX(), client.getCameraY(),
+					client.getCameraZ(), client.getScale(),
+					client.getViewportWidth(),
+					client.getViewportHeight());
+			}
+			catch (Exception poseEx)
+			{
+				log.warn("Headless capture converged pose unreadable: {}",
+					poseEx.toString());
+			}
 		}
 		if (options.orbitDegrees != 0.0 && lastAimYaw >= 0)
 		{
