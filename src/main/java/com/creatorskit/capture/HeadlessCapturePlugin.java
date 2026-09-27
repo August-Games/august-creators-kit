@@ -1595,7 +1595,12 @@ public class HeadlessCapturePlugin extends Plugin
 				{
 					return;
 				}
-				int yaw = (int) (Math.atan2(dx, dy) * 325.94932345220167) & 0x7FF;
+				// Client forward is (-sin yaw, +cos yaw): yaw 0 looks
+				// north with the camera south of the focal point. Aim
+				// from the bot side (pv2 021): negate dx so the camera
+				// sits on the bot side looking outward at the actors,
+				// instead of beyond them looking back.
+				int yaw = (int) (Math.atan2(-dx, dy) * 325.94932345220167) & 0x7FF;
 				client.setCameraYawTarget(yaw);
 				client.setCameraPitchTarget(pitch);
 				int zoom = options.zoom;
@@ -1631,6 +1636,19 @@ public class HeadlessCapturePlugin extends Plugin
 				lastAimPitch = pitch;
 				log.warn("Headless capture camera aim: yaw={} pitch={} zoom={} focal={} actors at +{}/{}",
 					yaw, pitch, zoom, focal, dx, dy);
+				try
+				{
+					// Calibrate the audit's camera model (pv2 021): the
+					// live camera position and viewport scale pin down
+					// the zoom->distance map and the Perspective divisor.
+					log.warn("Headless capture camera posed: x={} y={} z={} scale={} view={}x{}",
+						client.getCameraX(), client.getCameraY(), client.getCameraZ(),
+						client.getScale(), client.getViewportWidth(), client.getViewportHeight());
+				}
+				catch (Exception poseEx)
+				{
+					log.warn("Headless capture camera pose unreadable: {}", poseEx.toString());
+				}
 			}
 			finally
 			{
