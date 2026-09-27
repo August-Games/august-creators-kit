@@ -88,13 +88,39 @@ public class CameraGuardTest
 	}
 
 	@Test
-	public void tallSceneryThreshold()
+	public void sightInterpolatesEndpoints()
 	{
-		assertFalse(HeadlessCapturePlugin.tallScenery(0));
-		assertFalse(HeadlessCapturePlugin.tallScenery(
-			HeadlessCapturePlugin.TALL_SCENERY_MIN_HEIGHT - 1));
-		assertTrue(HeadlessCapturePlugin.tallScenery(
-			HeadlessCapturePlugin.TALL_SCENERY_MIN_HEIGHT));
+		// Camera high (down 100), focal lower (down 500): endpoints exact.
+		assertTrue(HeadlessCapturePlugin.sightHeightDown(
+			0, 0, 100, 1280, 0, 500, 0, 0) == 100);
+		assertTrue(HeadlessCapturePlugin.sightHeightDown(
+			0, 0, 100, 1280, 0, 500, 1280, 0) == 500);
+	}
+
+	@Test
+	public void sightMidpointAndClamp()
+	{
+		assertTrue(HeadlessCapturePlugin.sightHeightDown(
+			0, 0, 100, 1280, 0, 500, 640, 0) == 300);
+		// Past the focal clamps to the focal end.
+		assertTrue(HeadlessCapturePlugin.sightHeightDown(
+			0, 0, 100, 1280, 0, 500, 2560, 0) == 500);
+	}
+
+	@Test
+	public void pierceNeedsClearMargin()
+	{
+		// Down units: smaller top is taller. 63 above the line passes,
+		// 65 above fails (64 margin).
+		assertFalse(HeadlessCapturePlugin.piercesSight(436, 500));
+		assertTrue(HeadlessCapturePlugin.piercesSight(435, 500));
+		assertFalse(HeadlessCapturePlugin.piercesSight(600, 500));
+	}
+
+	@Test
+	public void objectTopDownSubtractsHeight()
+	{
+		assertTrue(HeadlessCapturePlugin.objectTopDown(-896, 240) == -1136);
 	}
 
 	@Test
